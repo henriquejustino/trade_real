@@ -306,7 +306,7 @@ class TrendFollowingStrategy(BaseStrategy):
 
 
 class EnsembleStrategy(BaseStrategy):
-    """Ensemble strategy combining multiple strategies with weighted votinFg"""
+    """Ensemble strategy combining multiple strategies with weighted voting"""
     
     def __init__(
         self,
@@ -371,7 +371,7 @@ class EnsembleStrategy(BaseStrategy):
                 sell_score += weighted_strength
         
         # Determine final signal
-        threshold = 0.1  # Require at least 40% weighted agreement
+        threshold = 0.4  # Require at least 40% weighted agreement
         
         if buy_score > sell_score and buy_score > threshold:
             return 'BUY', buy_score
