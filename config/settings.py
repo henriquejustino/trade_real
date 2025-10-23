@@ -10,6 +10,9 @@ from decimal import Decimal
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
+from datetime import datetime
+
+hoje = datetime.now()
 
 
 # Load environment variables
@@ -32,8 +35,8 @@ class Settings(BaseSettings):
     
     # Trading Pairs
     TRADING_PAIRS: List[str] = Field(
-        # default=["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"]
-        default=["BTCUSDT"]
+        default=["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"]
+        # default=["BTCUSDT", "ETHUSDT"]
     )
     
     # Timeframes
@@ -42,8 +45,8 @@ class Settings(BaseSettings):
     ADDITIONAL_TIMEFRAMES: List[str] = ["15m", "5m"]
     
     # Strategy Configuration
-    # STRATEGY_MODE: str = "ensemble"  # ensemble, mean_reversion, breakout, trend_following
-    STRATEGY_MODE: str = "breakout"
+    STRATEGY_MODE: str = "ensemble_aggressive"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following
+    REQUIRE_MTF_ALIGNMENT: bool = False  # True = conservador (exige alinhamento), False = agressivo
     
     # Risk Management
     RISK_PER_TRADE: Decimal = Decimal("0.02")  # 2% of equity per trade
@@ -73,8 +76,11 @@ class Settings(BaseSettings):
     )
     
     # Backtest Configuration
-    BACKTEST_START_DATE: str = "2024-01-01"
-    BACKTEST_END_DATE: str = "2024-10-22"
+    # BACKTEST_START_DATE: str = "2024-01-01"
+    # BACKTEST_END_DATE: str = "2024-10-22"
+    BACKTEST_START_DATE: str = f"{hoje.year}-01-01"
+    BACKTEST_END_DATE: str = hoje.strftime("%Y-%m-%d")
+
     BACKTEST_INITIAL_CAPITAL: Decimal = Decimal("10000.0")
     
     # Data Sources

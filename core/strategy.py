@@ -310,7 +310,8 @@ class EnsembleStrategy(BaseStrategy):
     
     def __init__(
         self,
-        weights: Optional[Dict[str, float]] = None
+        weights: Optional[Dict[str, float]] = None,
+        aggressive: bool = False  # Novo parâmetro
     ):
         super().__init__("Ensemble")
         
@@ -321,12 +322,23 @@ class EnsembleStrategy(BaseStrategy):
             'trend_following': TrendFollowingStrategy()
         }
         
-        # Default weights
-        self.weights = weights or {
-            'mean_reversion': 0.3,
-            'breakout': 0.3,
-            'trend_following': 0.4
-        }
+        # Modo agressivo usa pesos diferentes
+        if aggressive:
+            # Mais peso em breakout (mais agressivo)
+            self.weights = weights or {
+                'mean_reversion': 0.2,
+                'breakout': 0.4,
+                'trend_following': 0.4
+            }
+            self.threshold = 0.12  # 20% ao invés de 30%
+        else:
+            # Default weights
+            self.weights = weights or {
+                'mean_reversion': 0.1818,
+                'breakout': 0.2727,
+                'trend_following': 0.5455
+            }
+            self.threshold = 0.2
         
         # Normalize weights
         total_weight = sum(self.weights.values())
@@ -370,12 +382,13 @@ class EnsembleStrategy(BaseStrategy):
             elif signal == 'SELL':
                 sell_score += weighted_strength
         
-        # Determine final signal
-        threshold = 0.3  # Require at least 30% weighted agreement (reduzido de 40%)
+        # Log scores for debugging
+        self.logger.debug(f"Buy score: {buy_score:.2f}, Sell score: {sell_score:.2f}, Threshold: {self.threshold:.2f}")
         
-        if buy_score > sell_score and buy_score > threshold:
+        # Determine final signal
+        if buy_score > sell_score and buy_score > self.threshold:
             return 'BUY', buy_score
-        elif sell_score > buy_score and sell_score > threshold:
+        elif sell_score > buy_score and sell_score > self.threshold:
             return 'SELL', sell_score
         else:
             return 'HOLD', 0.0
@@ -400,7 +413,8 @@ class StrategyFactory:
             'mean_reversion': MeanReversionStrategy,
             'breakout': BreakoutStrategy,
             'trend_following': TrendFollowingStrategy,
-            'ensemble': EnsembleStrategy
+            'ensemble': EnsembleStrategy,
+            'ensemble_aggressive': lambda **kw: EnsembleStrategy(aggressive=True, **kw),
         }
         
         strategy_class = strategies.get(strategy_name.lower())
@@ -421,7 +435,8 @@ class MultiTimeframeAnalyzer:
         self,
         primary_timeframe: str,
         entry_timeframe: str,
-        strategy: BaseStrategy
+        strategy: BaseStrategy,
+        require_alignment: bool = True  # Novo parâmetro
     ):
         """
         Initialize multi-timeframe analyzer
@@ -430,10 +445,13 @@ class MultiTimeframeAnalyzer:
             primary_timeframe: Primary trend timeframe (e.g., '4h')
             entry_timeframe: Entry signal timeframe (e.g., '1h')
             strategy: Strategy to use for analysis
+            require_alignment: Se True, exige alinhamento perfeito (conservador)
+                              Se False, permite trades mesmo sem alinhamento (agressivo)
         """
         self.primary_timeframe = primary_timeframe
         self.entry_timeframe = entry_timeframe
         self.strategy = strategy
+        self.require_alignment = require_alignment
         self.logger = logging.getLogger('TradingBot.MultiTimeframe')
     
     def analyze(

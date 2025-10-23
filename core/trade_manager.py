@@ -63,7 +63,8 @@ class TradeManager:
         self.mtf_analyzer = MultiTimeframeAnalyzer(
             primary_timeframe=settings.PRIMARY_TIMEFRAME,
             entry_timeframe=settings.ENTRY_TIMEFRAME,
-            strategy=self.strategy
+            strategy=self.strategy,
+            require_alignment=settings.REQUIRE_MTF_ALIGNMENT
         )
         
         # State
