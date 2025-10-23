@@ -178,9 +178,9 @@ class BreakoutStrategy(BaseStrategy):
         
         # Get latest values
         close = df['close'].iloc[-1]
-        prev_close = df['close'].iloc[-1]
-        dc_upper = df['dc_upper'].iloc[-1]  # Previous candle's high
-        dc_lower = df['dc_lower'].iloc[-1]  # Previous candle's low
+        prev_close = df['close'].iloc[-2]
+        dc_upper = df['dc_upper'].iloc[-2]  # Previous candle's high
+        dc_lower = df['dc_lower'].iloc[-2]  # Previous candle's low
         volume_ratio = df['volume_ratio'].iloc[-1]
         
         if pd.isna(dc_upper) or pd.isna(volume_ratio):
@@ -283,8 +283,8 @@ class TrendFollowingStrategy(BaseStrategy):
         adx = df['adx'].iloc[-1]
         
         # Previous values
-        prev_ema_fast = df['ema_fast'].iloc[-1]
-        prev_ema_slow = df['ema_slow'].iloc[-1]
+        prev_ema_fast = df['ema_fast'].iloc[-2]
+        prev_ema_slow = df['ema_slow'].iloc[-2]
         
         if pd.isna(ema_fast) or pd.isna(adx):
             return 'HOLD', 0.0
@@ -371,7 +371,7 @@ class EnsembleStrategy(BaseStrategy):
                 sell_score += weighted_strength
         
         # Determine final signal
-        threshold = 0.4  # Require at least 40% weighted agreement
+        threshold = 0.3  # Require at least 30% weighted agreement (reduzido de 40%)
         
         if buy_score > sell_score and buy_score > threshold:
             return 'BUY', buy_score

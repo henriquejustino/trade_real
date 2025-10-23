@@ -335,7 +335,7 @@ class TradeManager:
                 )
                 
                 # Execute trade if strong signal
-                if signal in ['BUY', 'SELL'] and strength > 0.6:
+                if signal in ['BUY', 'SELL'] and strength > 0.5:  # Reduzido de 0.6 para 0.5
                     self.logger.info(
                         f"Signal detected for {symbol}: {signal} "
                         f"(strength: {strength:.2f})"
