@@ -65,6 +65,24 @@ class Settings(BaseSettings):
     TAKE_PROFIT_PERCENT: Decimal = Decimal("0.04")  # 4%
     USE_TRAILING_STOP: bool = True
     TRAILING_STOP_ATR_MULTIPLIER: Decimal = Decimal("2.0")
+
+    # 🆕 TAKE PROFIT PARCIAL (Melhor Profit Factor!)
+    USE_PARTIAL_TAKE_PROFIT: bool = True
+    # Formato: (% do caminho até TP, % da posição a fechar)
+    # Exemplo: (0.5, 0.3) = Quando chegar 50% do TP, fecha 30% da posição
+    TP1_PERCENT: float = 0.5   # 50% do caminho
+    TP1_QUANTITY: float = 0.3  # Fecha 30%
+    TP2_PERCENT: float = 0.75  # 75% do caminho
+    TP2_QUANTITY: float = 0.4  # Fecha 40%
+    TP3_QUANTITY: float = 0.3  # Fecha 30% restante
+
+    # 🆕 POSITION SIZING DINÂMICO (Maior Retorno!)
+    USE_DYNAMIC_POSITION_SIZING: bool = True
+    # Multiplicadores de risco baseados na força do sinal
+    RISK_MULTIPLIER_VERY_STRONG: float = 1.5   # Signal >= 0.8 → 3% risk
+    RISK_MULTIPLIER_STRONG: float = 1.25       # Signal >= 0.6 → 2.5% risk
+    RISK_MULTIPLIER_MEDIUM: float = 1.0        # Signal >= 0.4 → 2% risk
+    RISK_MULTIPLIER_WEAK: float = 0.75         # Signal < 0.4 → 1.5% risk
     
     # Fees and Slippage
     MAKER_FEE: Decimal = Decimal("0.001")  # 0.1%
@@ -164,9 +182,19 @@ class Settings(BaseSettings):
             raise ValueError("MAX_DRAWDOWN_PERCENT must be between 0 and 0.5 (50%)")
         return v
     
+    def _validate_partial_tp_config(self) -> None:
+        """Validate partial take profit configuration"""
+        if self.USE_PARTIAL_TAKE_PROFIT:
+            total = self.TP1_QUANTITY + self.TP2_QUANTITY + self.TP3_QUANTITY
+            if abs(total - 1.0) > 0.01:  # Tolerância de 1%
+                raise ValueError(
+                    f"As quantidades parciais de TP devem somar 1,0 (100%), obtido {total}"
+                )
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._create_directories()
+        self._validate_partial_tp_config()
     
     def _create_directories(self) -> None:
         """Create necessary directories if they don't exist"""

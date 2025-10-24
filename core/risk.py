@@ -365,3 +365,91 @@ class RiskManager:
             return False, f"Risk-reward ratio {rr_ratio:.2f} below minimum {min_risk_reward}"
         
         return True, "OK"
+    
+    def calculate_dynamic_position_size(
+        self,
+        capital: Decimal,
+        entry_price: Decimal,
+        stop_loss_price: Decimal,
+        symbol_filters: dict,
+        signal_strength: float  # NOVO PARÂMETRO!
+    ) -> Optional[Decimal]:
+        """
+        Calculate position size dynamically based on signal strength
+        
+        Args:
+            capital: Available capital
+            entry_price: Entry price
+            stop_loss_price: Stop loss price
+            symbol_filters: Symbol filters from exchange
+            signal_strength: Signal strength (0.0 to 1.0)
+            
+        Returns:
+            Position size (quantity) or None if too small
+        """
+        # DYNAMIC RISK based on signal strength
+        if signal_strength >= 0.8:
+            # Very strong signal - risk 3%
+            risk_multiplier = Decimal("1.5")  # 2% * 1.5 = 3%
+            self.logger.info(f"💪 Sinal FORTE ({signal_strength:.2f}) - Usando 3% de risco")
+        elif signal_strength >= 0.6:
+            # Strong signal - risk 2.5%
+            risk_multiplier = Decimal("1.25")  # 2% * 1.25 = 2.5%
+            self.logger.info(f"👍 sinal BOM ({signal_strength:.2f}) - Usando risco de 2,5%")
+        elif signal_strength >= 0.4:
+            # Medium signal - risk 2%
+            risk_multiplier = Decimal("1.0")  # 2% * 1.0 = 2%
+            self.logger.info(f"✋ Sinal MÉDIO ({signal_strength:.2f}) - Usando 2% de risco")
+        else:
+            # Weak signal - risk 1.5%
+            risk_multiplier = Decimal("0.75")  # 2% * 0.75 = 1.5%
+            self.logger.info(f"⚠️ Sinal FRACO ({signal_strength:.2f}) - Usando risco de 1,5%")
+        
+        # Calculate dynamic risk
+        dynamic_risk = self.risk_per_trade * risk_multiplier
+        
+        # Calculate stop loss distance
+        stop_loss_distance = abs(entry_price - stop_loss_price) / entry_price
+        
+        if stop_loss_distance == 0:
+            self.logger.warning("A distância do stop loss é zero")
+            return None
+        
+        # Calculate position size with dynamic risk
+        risk_amount = capital * dynamic_risk
+        position_size_usd = risk_amount / stop_loss_distance
+        quantity = position_size_usd / entry_price
+        
+        # Round down to step size
+        from core.utils import round_down
+        quantity = round_down(Decimal(str(quantity)), symbol_filters['stepSize'])
+        
+        # Check minimum quantity
+        if quantity < symbol_filters['minQty']:
+            return None
+        
+        # Check minimum notional
+        notional = quantity * entry_price
+        if notional < symbol_filters['minNotional']:
+            return None
+        
+        # Enforce position size limits
+        position_value = quantity * entry_price
+        
+        if position_value < self.settings.MIN_POSITION_SIZE_USD:
+            self.logger.warning(
+                f"Valor da posição ${position_value} abaixo do mínimo "
+                f"${self.settings.MIN_POSITION_SIZE_USD}"
+            )
+            return None
+        
+        if position_value > self.settings.MAX_POSITION_SIZE_USD:
+            # Scale down to max
+            max_quantity = self.settings.MAX_POSITION_SIZE_USD / entry_price
+            quantity = round_down(
+                Decimal(str(max_quantity)),
+                symbol_filters['stepSize']
+            )
+            self.logger.info(f"Posição reduzida ao tamanho máximo: {quantity}")
+        
+        return quantity

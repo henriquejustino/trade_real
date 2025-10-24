@@ -24,7 +24,7 @@ from core.utils import (
 
 
 class BacktestTrade:
-    """Represents a trade in backtest"""
+    """Represents a trade in backtest with partial take profit support"""
     
     def __init__(
         self,
@@ -39,10 +39,26 @@ class BacktestTrade:
         self.symbol = symbol
         self.side = side
         self.entry_price = entry_price
-        self.quantity = quantity
+        self.initial_quantity = quantity  # Guarda quantidade inicial
+        self.quantity = quantity  # Quantidade atual
         self.entry_time = entry_time
         self.stop_loss = stop_loss
         self.take_profit = take_profit
+        
+        # Take Profit Parcial (3 níveis)
+        distance = abs(take_profit - entry_price)
+        if side == 'BUY':
+            self.tp1 = entry_price + (distance * Decimal('0.5'))  # 50% do caminho
+            self.tp2 = entry_price + (distance * Decimal('0.75'))  # 75% do caminho
+            self.tp3 = take_profit  # 100%
+        else:  # SELL
+            self.tp1 = entry_price - (distance * Decimal('0.5'))
+            self.tp2 = entry_price - (distance * Decimal('0.75'))
+            self.tp3 = take_profit
+        
+        self.tp1_hit = False
+        self.tp2_hit = False
+        self.tp3_hit = False
         
         self.exit_price: Optional[Decimal] = None
         self.exit_time: Optional[datetime] = None
@@ -51,6 +67,91 @@ class BacktestTrade:
         self.fees: Decimal = Decimal('0')
         self.status: str = 'OPEN'
         self.exit_reason: str = ''
+        self.partial_exits: List[Dict] = []  # Histórico de saídas parciais
+    
+    def check_partial_tp(
+        self,
+        current_price: Decimal,
+        current_time: datetime,
+        fee_rate: Decimal
+    ) -> Optional[str]:
+        """
+        Check and execute partial take profits
+        Returns: 'TP1', 'TP2', 'TP3', or None
+        """
+        if self.quantity <= 0:
+            return None
+        
+        hit_tp = None
+        quantity_to_close = Decimal('0')
+        
+        # Check TP1 (30% position)
+        if not self.tp1_hit:
+            if (self.side == 'BUY' and current_price >= self.tp1) or \
+               (self.side == 'SELL' and current_price <= self.tp1):
+                self.tp1_hit = True
+                quantity_to_close = self.initial_quantity * Decimal('0.3')
+                hit_tp = 'TP1'
+        
+        # Check TP2 (40% position)
+        elif not self.tp2_hit:
+            if (self.side == 'BUY' and current_price >= self.tp2) or \
+               (self.side == 'SELL' and current_price <= self.tp2):
+                self.tp2_hit = True
+                quantity_to_close = self.initial_quantity * Decimal('0.4')
+                hit_tp = 'TP2'
+        
+        # Check TP3 (30% remaining)
+        elif not self.tp3_hit:
+            if (self.side == 'BUY' and current_price >= self.tp3) or \
+               (self.side == 'SELL' and current_price <= self.tp3):
+                self.tp3_hit = True
+                quantity_to_close = self.quantity  # Resto
+                hit_tp = 'TP3'
+        
+        if hit_tp and quantity_to_close > 0:
+            # Calculate partial PnL
+            if self.side == 'BUY':
+                partial_pnl = (current_price - self.entry_price) * quantity_to_close
+            else:
+                partial_pnl = (self.entry_price - current_price) * quantity_to_close
+            
+            # Calculate partial fees
+            entry_value = self.entry_price * quantity_to_close
+            exit_value = current_price * quantity_to_close
+            partial_fees = (entry_value + exit_value) * fee_rate
+            
+            # Net partial PnL
+            partial_pnl -= partial_fees
+            
+            # Update totals
+            self.pnl += partial_pnl
+            self.fees += partial_fees
+            self.quantity -= quantity_to_close
+            
+            # Record partial exit
+            self.partial_exits.append({
+                'time': current_time,
+                'price': current_price,
+                'quantity': quantity_to_close,
+                'pnl': partial_pnl,
+                'level': hit_tp
+            })
+            
+            # If all closed, mark as complete
+            if self.quantity <= Decimal('0.0001'):
+                self.status = 'CLOSED'
+                self.exit_price = current_price
+                self.exit_time = current_time
+                self.exit_reason = 'TAKE_PROFIT_FULL'
+                
+                # Calculate final PnL percentage
+                total_entry_value = self.entry_price * self.initial_quantity
+                self.pnl_percent = float((self.pnl / total_entry_value) * 100)
+            
+            return hit_tp
+        
+        return None
     
     def close(
         self,
@@ -59,28 +160,35 @@ class BacktestTrade:
         reason: str,
         fee_rate: Decimal
     ) -> None:
-        """Close the trade"""
+        """Close remaining position (stop loss or manual exit)"""
+        if self.quantity <= 0:
+            return
+        
         self.exit_price = exit_price
         self.exit_time = exit_time
         self.exit_reason = reason
         self.status = 'CLOSED'
         
-        # Calculate PnL
+        # Calculate PnL for remaining quantity
         if self.side == 'BUY':
-            self.pnl = (exit_price - self.entry_price) * self.quantity
+            remaining_pnl = (exit_price - self.entry_price) * self.quantity
         else:
-            self.pnl = (self.entry_price - exit_price) * self.quantity
+            remaining_pnl = (self.entry_price - exit_price) * self.quantity
         
-        # Calculate fees (entry + exit)
+        # Calculate fees for remaining
         entry_value = self.entry_price * self.quantity
         exit_value = exit_price * self.quantity
-        self.fees = (entry_value + exit_value) * fee_rate
+        remaining_fees = (entry_value + exit_value) * fee_rate
         
-        # Net PnL
-        self.pnl -= self.fees
+        # Add to totals
+        self.pnl += remaining_pnl - remaining_fees
+        self.fees += remaining_fees
         
-        # PnL percentage
-        self.pnl_percent = float((self.pnl / entry_value) * 100)
+        # Calculate final PnL percentage
+        total_entry_value = self.entry_price * self.initial_quantity
+        self.pnl_percent = float((self.pnl / total_entry_value) * 100)
+        
+        self.quantity = Decimal('0')
 
 
 class BacktestEngine:
@@ -288,7 +396,8 @@ class BacktestEngine:
                         signal,
                         current_candle['close'],
                         current_time,
-                        entry_history.tail(100)
+                        entry_history.tail(100),
+                        strength=strength  # 🆕 PASSA A FORÇA!
                     )
             
             # Track equity
@@ -303,7 +412,9 @@ class BacktestEngine:
         side: str,
         price: Decimal,
         time: datetime,
-        df: pd.DataFrame
+        df: pd.DataFrame,
+        strength: float = 0.5  # 🆕 ADICIONE ESTE PARÂMETRO
+
     ) -> None:
         """Open a new trade in backtest"""
         
@@ -338,11 +449,12 @@ class BacktestEngine:
             'minNotional': Decimal('10'),
         }
         
-        quantity = self.risk_manager.calculate_position_size(
-            capital=self.capital,
-            entry_price=Decimal(str(price)),
-            stop_loss_price=stop_loss,
-            symbol_filters=filters
+        quantity = self.risk_manager.calculate_dynamic_position_size(
+        capital=self.capital,
+        entry_price=Decimal(str(price)),
+        stop_loss_price=stop_loss,
+        symbol_filters=filters,
+        signal_strength=strength  # 🆕 USA A FORÇA DO SINAL!
         )
         
         if not quantity:
@@ -362,7 +474,7 @@ class BacktestEngine:
         self.open_trades[symbol] = trade
         
         self.logger.info(
-            f"  Opened {side} trade: {quantity} {symbol} @ ${price} "
+            f"  Aberto {side} trade: {quantity} {symbol} @ ${price} "
             f"(SL: ${stop_loss}, TP: ${take_profit})"
         )
     
@@ -378,7 +490,32 @@ class BacktestEngine:
         
         trade = self.open_trades[symbol]
         
-        # Check stop loss
+        # Check PARTIAL TAKE PROFITS first! 🆕
+        tp_hit = trade.check_partial_tp(
+            Decimal(str(close)),
+            time,
+            self.settings.TAKER_FEE
+        )
+        
+        if tp_hit:
+            self.logger.info(
+                f"  💰 {tp_hit} acerto para {symbol}: Posição parcial fechada"
+            )
+            
+            # If fully closed via TP3, remove from open trades
+            if trade.status == 'FECHADO':
+                self.open_trades.pop(symbol)
+                self.capital += trade.pnl
+                self.risk_manager.update_daily_pnl(trade.pnl)
+                self.risk_manager.update_equity_tracking(self.capital)
+                self.trades.append(trade)
+                self.logger.info(
+                    f"  ✅ Totalmente fechado via TPs parciais | "
+                    f"Total PnL: ${trade.pnl:.2f} ({trade.pnl_percent:+.2f}%)"
+                )
+            return
+        
+        # Check stop loss (para quantidade restante)
         if trade.side == 'BUY' and low <= float(trade.stop_loss):
             exit_price = trade.stop_loss
             self._close_trade(symbol, exit_price, time, 'STOP_LOSS')

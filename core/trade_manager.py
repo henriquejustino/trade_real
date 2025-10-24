@@ -389,11 +389,12 @@ class TradeManager:
             )
             
             # Calculate position size
-            quantity = self.risk_manager.calculate_position_size(
-                capital=total_capital,
-                entry_price=current_price,
-                stop_loss_price=stop_loss,
-                symbol_filters=filters
+            quantity = self.risk_manager.calculate_dynamic_position_size(
+            capital=total_capital,
+            entry_price=current_price,
+            stop_loss_price=stop_loss,
+            symbol_filters=filters,
+            signal_strength=strength
             )
 
             # Se for execução parcial, reduz posição pela metade
