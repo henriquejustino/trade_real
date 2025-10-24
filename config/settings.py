@@ -44,11 +44,11 @@ class Settings(BaseSettings):
     ADDITIONAL_TIMEFRAMES: List[str] = ["15m", "5m"]
     
     # Strategy Configuration
-    STRATEGY_MODE: str = "ensemble_ultra"
-    REQUIRE_MTF_ALIGNMENT: bool = False
+    # STRATEGY_MODE: str = "ensemble_ultra"
+    # REQUIRE_MTF_ALIGNMENT: bool = False
 
-    # STRATEGY_MODE: str = "ensemble_aggressive"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following, ensemble_ultra
-    # REQUIRE_MTF_ALIGNMENT: bool = False  # True = conservador (exige alinhamento), False = agressivo
+    STRATEGY_MODE: str = "ensemble_aggressive"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following, ensemble_ultra
+    REQUIRE_MTF_ALIGNMENT: bool = True  # True = conservador (exige alinhamento), False = agressivo
     
     # Risk Management
     RISK_PER_TRADE: Decimal = Decimal("0.015")  # 2% of equity per trade

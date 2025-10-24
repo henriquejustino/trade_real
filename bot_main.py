@@ -86,13 +86,13 @@ def run_testnet(settings: Settings, logger: logging.Logger) -> None:
         manager.start()
         
     except KeyboardInterrupt:
-        print("\n\n⏸️  Shutting down testnet mode...")
-        logger.info("Testnet mode interrupted by user")
+        print("\n\n⏸️  Desligando o modo testnet...")
+        logger.info("Modo testnet interrompido pelo usuário")
         manager.stop()
         
     except Exception as e:
-        logger.error(f"Testnet mode failed: {e}", exc_info=True)
-        print(f"\n❌ Testnet failed: {e}")
+        logger.error(f"Falha no modo Testnet: {e}", exc_info=True)
+        print(f"\n❌ Falha no Testnet: {e}")
         sys.exit(1)
 
 
