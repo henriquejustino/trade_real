@@ -44,17 +44,17 @@ class Settings(BaseSettings):
     ADDITIONAL_TIMEFRAMES: List[str] = ["15m", "5m"]
     
     # Strategy Configuration
-    # STRATEGY_MODE: str = "ensemble_ultra"
-    # REQUIRE_MTF_ALIGNMENT: bool = False
+    STRATEGY_MODE: str = "ensemble_ultra"
+    REQUIRE_MTF_ALIGNMENT: bool = False
 
-    STRATEGY_MODE: str = "ensemble"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following, ensemble_ultra
-    REQUIRE_MTF_ALIGNMENT: bool = False  # True = conservador (exige alinhamento), False = agressivo
+    # STRATEGY_MODE: str = "ensemble_aggressive"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following, ensemble_ultra
+    # REQUIRE_MTF_ALIGNMENT: bool = False  # True = conservador (exige alinhamento), False = agressivo
     
     # Risk Management
-    RISK_PER_TRADE: Decimal = Decimal("0.02")  # 2% of equity per trade
-    MAX_OPEN_TRADES: int = 4
-    MAX_DRAWDOWN_PERCENT: Decimal = Decimal("0.15")  # 15% circuit breaker
-    MAX_DAILY_LOSS_PERCENT: Decimal = Decimal("0.05")  # 5% daily loss limit
+    RISK_PER_TRADE: Decimal = Decimal("0.015")  # 2% of equity per trade
+    MAX_OPEN_TRADES: int = 6
+    MAX_DRAWDOWN_PERCENT: Decimal = Decimal("0.18")  # 15% circuit breaker
+    MAX_DAILY_LOSS_PERCENT: Decimal = Decimal("0.035")  # 5% daily loss limit
     
     # Position Sizing
     MIN_POSITION_SIZE_USD: Decimal = Decimal("10.0")

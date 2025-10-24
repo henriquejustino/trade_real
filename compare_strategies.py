@@ -50,7 +50,7 @@ def run_backtest():
             input="1\n",
             text=True,
             capture_output=True,
-            timeout=900,
+            timeout=1200,
             encoding="utf-8",
             errors="ignore"
         )

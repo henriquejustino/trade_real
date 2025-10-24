@@ -301,64 +301,67 @@ class TradeManager:
         # Scan each trading pair
         for symbol in self.settings.TRADING_PAIRS:
             try:
-                # Check if we already have an open trade for this symbol
+                # Skip if already have open trade on this pair
                 existing_trade = session.query(Trade).filter(
                     Trade.symbol == symbol,
                     Trade.status == 'OPEN',
                     Trade.mode == self.mode
                 ).first()
-                
                 if existing_trade:
                     continue
                 
-                # Avoid too frequent signals
+                # Avoid excessive signal frequency (2 min cooldown)
                 last_signal = self.last_signal_time.get(symbol)
-                if last_signal and (datetime.utcnow() - last_signal).seconds < 300:
+                if last_signal and (datetime.utcnow() - last_signal).seconds < 120:
                     continue
                 
-                # Get market data
+                # Fetch data for both timeframes
                 primary_df = self.exchange.get_klines(
                     symbol,
                     self.settings.PRIMARY_TIMEFRAME,
                     limit=500
                 )
-                
                 entry_df = self.exchange.get_klines(
                     symbol,
                     self.settings.ENTRY_TIMEFRAME,
                     limit=500
                 )
                 
-                # Analyze signals
+                # Multi-timeframe signal analysis
                 signal, strength, metadata = self.mtf_analyzer.analyze(
                     primary_df,
                     entry_df
                 )
                 
-                # Execute trade if strong signal
-                if signal in ['BUY', 'SELL'] and strength > 0.5:  # Reduzido de 0.6 para 0.5
-                    self.logger.info(
-                        f"Signal detected for {symbol}: {signal} "
-                        f"(strength: {strength:.2f})"
+                # Only act if BUY or SELL
+                if signal in ['BUY', 'SELL']:
+                    # Define tipo de execução com base na força do sinal
+                    exec_type = (
+                        'FULL' if strength >= 0.55 
+                        else 'PARTIAL' if strength >= 0.40 
+                        else 'SKIP'
                     )
-                    
-                    self._execute_trade(session, symbol, signal, strength, entry_df)
-                    self.last_signal_time[symbol] = datetime.utcnow()
-                
+
+                    if exec_type != 'SKIP':
+                        self.logger.info(
+                            f"✅ Signal detected: {symbol} | {signal} | "
+                            f"Strength={strength:.2f} | Exec={exec_type}"
+                        )
+                        self._execute_trade(
+                            session, symbol, signal, strength, entry_df, exec_type=exec_type
+                        )
+                        self.last_signal_time[symbol] = datetime.utcnow()
+                    else:
+                        self.logger.debug(
+                            f"⚪ Ignored weak signal for {symbol}: "
+                            f"{signal} (strength={strength:.2f})"
+                        )
+            
             except Exception as e:
-                self.logger.error(
-                    f"Error scanning {symbol}: {e}",
-                    exc_info=True
-                )
+                self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
+
     
-    def _execute_trade(
-        self,
-        session: Session,
-        symbol: str,
-        signal: str,
-        strength: float,
-        df: pd.DataFrame
-    ) -> None:
+    def _execute_trade(self, session, symbol, signal, strength, df, exec_type: str = 'FULL') -> None:
         """Execute a new trade"""
         try:
             # Get current price and filters
@@ -392,6 +395,11 @@ class TradeManager:
                 stop_loss_price=stop_loss,
                 symbol_filters=filters
             )
+
+            # Se for execução parcial, reduz posição pela metade
+            if exec_type == 'PARTIAL':
+                quantity = (Decimal(str(quantity)) * Decimal("0.5")).quantize(Decimal('0.00000001'))
+                self.logger.info(f"⚠ Execução parcial ativada — quantidade reduzida para {quantity}")
             
             if not quantity:
                 self.logger.warning(f"Position size too small for {symbol}")
@@ -467,7 +475,7 @@ class TradeManager:
             # Send notification
             notify(
                 self.settings,
-                f"🎯 New Trade Opened - {symbol}",
+                f"🎯 New Trade Opened - {symbol} ({exec_type})",
                 f"Side: {side}\n"
                 f"Entry: ${current_price}\n"
                 f"Quantity: {quantity}\n"

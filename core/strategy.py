@@ -92,40 +92,39 @@ class MeanReversionStrategy(BaseStrategy):
         return df
     
     def generate_signal(self, df: pd.DataFrame) -> Tuple[str, float]:
-        """
-        Generate mean reversion signal
-        
-        Buy when price touches lower band and RSI is oversold
-        Sell when price touches upper band and RSI is overbought
-        """
         if len(df) < self.bb_period:
             return 'HOLD', 0.0
-        
+
         df = self.add_indicators(df)
-        
-        # Get latest values
+
         close = df['close'].iloc[-1]
+        prev_close = df['close'].iloc[-2]
         bb_upper = df['bb_upper'].iloc[-1]
         bb_lower = df['bb_lower'].iloc[-1]
-        bb_middle = df['bb_middle'].iloc[-1]
         rsi = df['rsi'].iloc[-1]
-        
-        # Check for NaN
+
         if pd.isna(rsi) or pd.isna(bb_lower):
             return 'HOLD', 0.0
-        
-        # Buy signal: price at lower band + RSI oversold
-        if close <= bb_lower and rsi < self.rsi_oversold:
-            # Strength based on how oversold
-            strength = min(1.0, (self.rsi_oversold - rsi) / 20)
+
+        # Proximity: se preço chega perto da banda (1% dentro) ou RSI próximo do oversold
+        prox_buy = close <= bb_lower * 1.01 or rsi < self.rsi_oversold
+        prox_sell = close >= bb_upper * 0.99 or rsi > self.rsi_overbought
+
+        # Confirmation: candle fechou com+ (simples confirmação)
+        confirm_buy = close > prev_close
+        confirm_sell = close < prev_close
+
+        if prox_buy:
+            base_strength = min(1.0, (self.rsi_oversold - rsi) / 20 if rsi < self.rsi_oversold else 0.25)
+            # aumenta se houver confirmação de candle
+            strength = min(1.0, base_strength + (0.2 if confirm_buy else 0.0))
             return 'BUY', strength
-        
-        # Sell signal: price at upper band + RSI overbought
-        if close >= bb_upper and rsi > self.rsi_overbought:
-            # Strength based on how overbought
-            strength = min(1.0, (rsi - self.rsi_overbought) / 20)
+
+        if prox_sell:
+            base_strength = min(1.0, (rsi - self.rsi_overbought) / 20 if rsi > self.rsi_overbought else 0.25)
+            strength = min(1.0, base_strength + (0.2 if confirm_sell else 0.0))
             return 'SELL', strength
-        
+
         return 'HOLD', 0.0
 
 
@@ -165,42 +164,45 @@ class BreakoutStrategy(BaseStrategy):
         return df
     
     def generate_signal(self, df: pd.DataFrame) -> Tuple[str, float]:
-        """
-        Generate breakout signal
-        
-        Buy on upside breakout with high volume
-        Sell on downside breakout with high volume
-        """
-        if len(df) < self.lookback_period:
+        if len(df) < self.lookback_period + 2:
             return 'HOLD', 0.0
-        
+
         df = self.add_indicators(df)
-        
-        # Get latest values
+
         close = df['close'].iloc[-1]
         prev_close = df['close'].iloc[-2]
-        dc_upper = df['dc_upper'].iloc[-2]  # Previous candle's high
-        dc_lower = df['dc_lower'].iloc[-2]  # Previous candle's low
+        dc_upper = df['dc_upper'].iloc[-2]
+        dc_lower = df['dc_lower'].iloc[-2]
         volume_ratio = df['volume_ratio'].iloc[-1]
-        
+        atr = df['atr'].iloc[-1] if 'atr' in df.columns else np.nan
+
         if pd.isna(dc_upper) or pd.isna(volume_ratio):
             return 'HOLD', 0.0
-        
-        # Buy signal: breakout above upper channel with volume
-        if close > dc_upper and volume_ratio > self.volume_threshold:
-            # Strength based on volume and breakout magnitude
-            breakout_pct = (close - dc_upper) / dc_upper
-            strength = min(1.0, (volume_ratio / self.volume_threshold) * 0.5 + 0.5)
-            return 'BUY', strength
-        
-        # Sell signal: breakdown below lower channel with volume
-        if close < dc_lower and volume_ratio > self.volume_threshold:
-            # Strength based on volume and breakdown magnitude
-            breakdown_pct = (dc_lower - close) / dc_lower
-            strength = min(1.0, (volume_ratio / self.volume_threshold) * 0.5 + 0.5)
-            return 'SELL', strength
-        
+
+        # Allow micro-breakout (close slightly above or equal to dc_upper) and slightly relaxed volume
+        breakout_ok = (close > dc_upper * 0.999) and (volume_ratio > self.volume_threshold * 0.85)
+        breakdown_ok = (close < dc_lower * 1.001) and (volume_ratio > self.volume_threshold * 0.85)
+
+        # require movement at least some fraction of ATR to reduce whipsaw
+        if breakout_ok and not pd.isna(atr):
+            if (close - dc_upper) >= 0.25 * atr:
+                breakout_pct = (close - dc_upper) / dc_upper
+                strength = min(1.0, 0.5 + min(0.5, breakout_pct * 50))
+                return 'BUY', strength
+            # retest filter: if prev_close closed above dc_upper, prefer that
+            if prev_close > dc_upper:
+                return 'BUY', min(1.0, volume_ratio / (self.volume_threshold or 1.0) * 0.6)
+
+        if breakdown_ok and not pd.isna(atr):
+            if (dc_lower - close) >= 0.25 * atr:
+                breakdown_pct = (dc_lower - close) / dc_lower
+                strength = min(1.0, 0.5 + min(0.5, breakdown_pct * 50))
+                return 'SELL', strength
+            if prev_close < dc_lower:
+                return 'SELL', min(1.0, volume_ratio / (self.volume_threshold or 1.0) * 0.6)
+
         return 'HOLD', 0.0
+
 
 
 class TrendFollowingStrategy(BaseStrategy):
@@ -211,7 +213,7 @@ class TrendFollowingStrategy(BaseStrategy):
         fast_ema: int = 12,
         slow_ema: int = 26,
         signal_ema: int = 9,
-        trend_ema: int = 200
+        trend_ema: int = 150
     ):
         super().__init__("TrendFollowing")
         self.fast_ema = fast_ema
@@ -290,11 +292,13 @@ class TrendFollowingStrategy(BaseStrategy):
             return 'HOLD', 0.0
         
         # Check trend strength (ADX > 25 indicates strong trend)
-        trend_strength = min(1.0, adx / 50) if adx > 25 else 0.5
+        trend_strength = min(1.0, adx / 50) if adx > 18 else 0.5
         
-        # Buy signal: bullish cross above trend line
+        # Allow cross even if close slightly below trend EMA (capture early trend)
+        trend_floor = ema_trend * 0.995  # 0.5% abaixo ainda OK
+
         if (ema_fast > ema_slow and prev_ema_fast <= prev_ema_slow and
-            close > ema_trend and macd > macd_signal):
+            close > trend_floor and macd > macd_signal):
             return 'BUY', trend_strength
         
         # Sell signal: bearish cross below trend line
@@ -306,43 +310,40 @@ class TrendFollowingStrategy(BaseStrategy):
 
 
 class EnsembleStrategy(BaseStrategy):
-    """Ensemble strategy combining multiple strategies with weighted voting"""
-    
-    def __init__(
-        self,
-        weights: Optional[Dict[str, float]] = None,
-        aggressive: bool = False  # Novo parâmetro
-    ):
+    def __init__(self, weights: Optional[Dict[str, float]] = None, aggressive: bool = False):
         super().__init__("Ensemble")
-        
-        # Initialize sub-strategies
         self.strategies = {
             'mean_reversion': MeanReversionStrategy(),
             'breakout': BreakoutStrategy(),
             'trend_following': TrendFollowingStrategy()
         }
-        
-        # Modo agressivo usa pesos diferentes
+
+        # Ajustes de pesos (default e agressivo)
         if aggressive:
-            # Mais peso em breakout (mais agressivo)
             self.weights = weights or {
-                'mean_reversion': 0.2,
+                'mean_reversion': 0.15,
                 'breakout': 0.5,
-                'trend_following': 0.3
+                'trend_following': 0.35
             }
-            self.threshold = 0.15  # 15% ao invés de 20% - MAIS AGRESSIVO!
+            # limiar padrão (full) e limiar baixo (para entradas parciais)
+            self.threshold = 0.15
+            self.threshold_low = 0.10
         else:
-            # Default weights
             self.weights = weights or {
-                'mean_reversion': 0.3,
-                'breakout': 0.3,
+                'mean_reversion': 0.25,
+                'breakout': 0.35,
                 'trend_following': 0.4
             }
-            self.threshold = 0.25  # 25% ao invés de 30% - REDUZIDO!
-        
+            self.threshold = 0.20
+            self.threshold_low = 0.12
+
         # Normalize weights
         total_weight = sum(self.weights.values())
         self.weights = {k: v / total_weight for k, v in self.weights.items()}
+
+        # Minimum bars needed: reduzido para não travar (antes era 200)
+        self.min_bars = max(50, max(s.trend_ema if hasattr(s, 'trend_ema') else 0 for s in self.strategies.values()))
+
     
     def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add all indicators from sub-strategies"""
@@ -354,44 +355,52 @@ class EnsembleStrategy(BaseStrategy):
         return df
     
     def generate_signal(self, df: pd.DataFrame) -> Tuple[str, float]:
-        """
-        Generate ensemble signal by weighted voting
-        
-        Returns strongest consensus signal
-        """
-        if len(df) < 200:  # Need enough data for trend following
+        if len(df) < self.min_bars:
             return 'HOLD', 0.0
-        
-        # Get signals from all strategies
+
         signals = {}
         for name, strategy in self.strategies.items():
             signal, strength = strategy.generate_signal(df)
             signals[name] = (signal, strength)
             self.logger.debug(f"{name}: {signal} ({strength:.2f})")
-        
-        # Calculate weighted votes
+
         buy_score = 0.0
         sell_score = 0.0
-        
+        votes = {'buy': 0, 'sell': 0}
+
         for name, (signal, strength) in signals.items():
             weight = self.weights[name]
             weighted_strength = strength * weight
-            
             if signal == 'BUY':
                 buy_score += weighted_strength
+                votes['buy'] += 1
             elif signal == 'SELL':
                 sell_score += weighted_strength
-        
-        # Log scores for debugging
-        self.logger.debug(f"Buy score: {buy_score:.2f}, Sell score: {sell_score:.2f}, Threshold: {self.threshold:.2f}")
-        
-        # Determine final signal
-        if buy_score > sell_score and buy_score > self.threshold:
+                votes['sell'] += 1
+
+        self.logger.debug(f"Buy score: {buy_score:.3f}, Sell score: {sell_score:.3f}, Threshold: {self.threshold:.3f}, Low: {getattr(self,'threshold_low',None)}")
+
+        # regra 1: full entry quando score > threshold
+        if buy_score > sell_score and buy_score >= self.threshold:
             return 'BUY', buy_score
-        elif sell_score > buy_score and sell_score > self.threshold:
+        if sell_score > buy_score and sell_score >= self.threshold:
             return 'SELL', sell_score
-        else:
-            return 'HOLD', 0.0
+
+        # regra 2: parcial se score >= threshold_low AND pelo menos 2 estratégias votaram a favor
+        if buy_score > sell_score and buy_score >= self.threshold_low and votes['buy'] >= 2:
+            # devolve sinal com força reduzida para indicar entrada parcial
+            return 'BUY', buy_score * 0.9
+        if sell_score > buy_score and sell_score >= self.threshold_low and votes['sell'] >= 2:
+            return 'SELL', sell_score * 0.9
+
+        # regra 3: se apenas uma estratégia forte (breakout forte), permitir se strength alta
+        # pega caso em que breakout faz a diferença mas os outros estão HOLD
+        breakout_sig, breakout_str = signals.get('breakout', ('HOLD', 0.0))
+        if breakout_sig in ['BUY','SELL'] and breakout_str > 0.85:
+            return breakout_sig, breakout_str * self.weights.get('breakout', 0.4)
+
+        return 'HOLD', 0.0
+
 
 
 class StrategyFactory:
