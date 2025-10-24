@@ -35,8 +35,7 @@ class Settings(BaseSettings):
     
     # Trading Pairs
     TRADING_PAIRS: List[str] = Field(
-        default=["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"]
-        # default=["BTCUSDT", "ETHUSDT"]
+        default=["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"]  # 4 pares = 4x mais oportunidades!
     )
     
     # Timeframes
@@ -45,7 +44,10 @@ class Settings(BaseSettings):
     ADDITIONAL_TIMEFRAMES: List[str] = ["15m", "5m"]
     
     # Strategy Configuration
-    STRATEGY_MODE: str = "ensemble_aggressive"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following
+    # STRATEGY_MODE: str = "ensemble_ultra"
+    # REQUIRE_MTF_ALIGNMENT: bool = False
+
+    STRATEGY_MODE: str = "ensemble"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following, ensemble_ultra
     REQUIRE_MTF_ALIGNMENT: bool = False  # True = conservador (exige alinhamento), False = agressivo
     
     # Risk Management

@@ -58,8 +58,8 @@ class MeanReversionStrategy(BaseStrategy):
         bb_period: int = 20,
         bb_std: float = 2.0,
         rsi_period: int = 14,
-        rsi_oversold: float = 30,
-        rsi_overbought: float = 70
+        rsi_oversold: float = 35,  # 35 ao invés de 30 (mais sinais)
+        rsi_overbought: float = 65  # 65 ao invés de 70 (mais sinais)
     ):
         super().__init__("MeanReversion")
         self.bb_period = bb_period
@@ -134,8 +134,8 @@ class BreakoutStrategy(BaseStrategy):
     
     def __init__(
         self,
-        lookback_period: int = 20,
-        volume_threshold: float = 1.5
+        lookback_period: int = 15,  # 15 ao invés de 20 (mais sinais)
+        volume_threshold: float = 1.3  # 1.3 ao invés de 1.5 (mais permissivo)
     ):
         super().__init__("Breakout")
         self.lookback_period = lookback_period
@@ -327,18 +327,18 @@ class EnsembleStrategy(BaseStrategy):
             # Mais peso em breakout (mais agressivo)
             self.weights = weights or {
                 'mean_reversion': 0.2,
-                'breakout': 0.4,
-                'trend_following': 0.4
+                'breakout': 0.5,
+                'trend_following': 0.3
             }
-            self.threshold = 0.12  # 20% ao invés de 30%
+            self.threshold = 0.15  # 15% ao invés de 20% - MAIS AGRESSIVO!
         else:
             # Default weights
             self.weights = weights or {
-                'mean_reversion': 0.1818,
-                'breakout': 0.2727,
-                'trend_following': 0.5455
+                'mean_reversion': 0.3,
+                'breakout': 0.3,
+                'trend_following': 0.4
             }
-            self.threshold = 0.2
+            self.threshold = 0.25  # 25% ao invés de 30% - REDUZIDO!
         
         # Normalize weights
         total_weight = sum(self.weights.values())
@@ -415,6 +415,12 @@ class StrategyFactory:
             'trend_following': TrendFollowingStrategy,
             'ensemble': EnsembleStrategy,
             'ensemble_aggressive': lambda **kw: EnsembleStrategy(aggressive=True, **kw),
+            # NOVO: Ensemble Ultra com indicadores mais sensíveis
+            'ensemble_ultra': lambda **kw: EnsembleStrategy(
+                aggressive=True,
+                weights={'mean_reversion': 0.15, 'breakout': 0.6, 'trend_following': 0.25},
+                **kw
+            ),
         }
         
         strategy_class = strategies.get(strategy_name.lower())
@@ -475,36 +481,86 @@ class MultiTimeframeAnalyzer:
         # Get entry signal
         entry_signal, entry_strength = self.strategy.generate_signal(entry_df)
         
-        # Only take trades aligned with primary trend
-        if primary_signal == 'HOLD':
-            return 'HOLD', 0.0, {
-                'primary_signal': primary_signal,
-                'entry_signal': entry_signal,
-                'reason': 'No primary trend'
-            }
+        # Modo CONSERVADOR (require_alignment = True)
+        if self.require_alignment:
+            # Only take trades aligned with primary trend
+            if primary_signal == 'HOLD':
+                return 'HOLD', 0.0, {
+                    'primary_signal': primary_signal,
+                    'entry_signal': entry_signal,
+                    'reason': 'No primary trend'
+                }
+            
+            if entry_signal == primary_signal:
+                # Signals aligned - combine strengths
+                combined_strength = (primary_strength * 0.6 + entry_strength * 0.4)
+                
+                self.logger.info(
+                    f"Aligned signals: {primary_signal} "
+                    f"(Primary: {primary_strength:.2f}, Entry: {entry_strength:.2f})"
+                )
+                
+                return entry_signal, combined_strength, {
+                    'primary_signal': primary_signal,
+                    'primary_strength': primary_strength,
+                    'entry_signal': entry_signal,
+                    'entry_strength': entry_strength,
+                    'aligned': True
+                }
+            else:
+                # Signals not aligned - wait
+                return 'HOLD', 0.0, {
+                    'primary_signal': primary_signal,
+                    'entry_signal': entry_signal,
+                    'reason': 'Signals not aligned'
+                }
         
-        if entry_signal == primary_signal:
-            # Signals aligned - combine strengths
-            combined_strength = (primary_strength * 0.6 + entry_strength * 0.4)
-            
-            self.logger.info(
-                f"Aligned signals: {primary_signal} "
-                f"(Primary: {primary_strength:.2f}, Entry: {entry_strength:.2f})"
-            )
-            
-            return entry_signal, combined_strength, {
-                'primary_signal': primary_signal,
-                'primary_strength': primary_strength,
-                'entry_signal': entry_signal,
-                'entry_strength': entry_strength,
-                'aligned': True
-            }
+        # Modo AGRESSIVO (require_alignment = False)
         else:
-            # Signals not aligned - wait
+            # Prioriza sinal do entry timeframe, mas considera o primary
+            if entry_signal in ['BUY', 'SELL']:
+                # Se entry tem sinal, usar ele
+                # Boost strength se alinhado com primary
+                if entry_signal == primary_signal:
+                    combined_strength = (primary_strength * 0.6 + entry_strength * 0.4)
+                    self.logger.info(
+                        f"Aligned signals (aggressive): {entry_signal} "
+                        f"(Primary: {primary_strength:.2f}, Entry: {entry_strength:.2f})"
+                    )
+                else:
+                    # Usa entry mesmo sem alinhamento, mas com strength reduzida
+                    combined_strength = entry_strength * 0.7  # Penalidade de 30%
+                    self.logger.info(
+                        f"Non-aligned signal (aggressive): Entry={entry_signal}({entry_strength:.2f}), "
+                        f"Primary={primary_signal}({primary_strength:.2f}) - Using entry with penalty"
+                    )
+                
+                return entry_signal, combined_strength, {
+                    'primary_signal': primary_signal,
+                    'primary_strength': primary_strength,
+                    'entry_signal': entry_signal,
+                    'entry_strength': entry_strength,
+                    'aligned': entry_signal == primary_signal,
+                    'mode': 'aggressive'
+                }
+            
+            # Se entry não tem sinal, tentar primary
+            elif primary_signal in ['BUY', 'SELL']:
+                self.logger.info(
+                    f"Using primary signal (aggressive): {primary_signal} ({primary_strength:.2f})"
+                )
+                return primary_signal, primary_strength * 0.8, {  # Penalidade por usar só primary
+                    'primary_signal': primary_signal,
+                    'primary_strength': primary_strength,
+                    'entry_signal': entry_signal,
+                    'reason': 'Using primary timeframe signal',
+                    'mode': 'aggressive'
+                }
+            
             return 'HOLD', 0.0, {
                 'primary_signal': primary_signal,
                 'entry_signal': entry_signal,
-                'reason': 'Signals not aligned'
+                'reason': 'No signals in any timeframe'
             }
     
     def get_atr(self, df: pd.DataFrame, period: int = 14) -> Decimal:

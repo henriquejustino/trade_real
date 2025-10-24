@@ -7,6 +7,8 @@ Interactive menu system for selecting operation mode
 import sys
 import os
 from pathlib import Path
+import sys
+import io
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -17,6 +19,7 @@ from config.settings import Settings
 from core.utils import setup_logging, clear_screen
 import logging
 
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 def display_menu() -> None:
     """Display the interactive menu"""
