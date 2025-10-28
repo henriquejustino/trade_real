@@ -503,7 +503,7 @@ class BacktestEngine:
             )
             
             # If fully closed via TP3, remove from open trades
-            if trade.status == 'FECHADO':
+            if trade.status == 'CLOSED':
                 self.open_trades.pop(symbol)
                 self.capital += trade.pnl
                 self.risk_manager.update_daily_pnl(trade.pnl)

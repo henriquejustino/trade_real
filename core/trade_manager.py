@@ -572,8 +572,7 @@ class TradeManager:
                     entry_df
                 )
                 
-                # Only act if BUY or SELL - EXATAMENTE IGUAL AO BACKTEST
-                if signal in ['BUY', 'SELL'] and strength > 0.4:
+                if signal in ['BUY', 'SELL'] and strength > 0.48:
                     self.logger.info(
                         f"✅ Signal detected: {symbol} | {signal} | "
                         f"Strength={strength:.2f}"
