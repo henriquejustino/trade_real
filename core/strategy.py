@@ -326,8 +326,8 @@ class EnsembleStrategy(BaseStrategy):
                 'trend_following': 0.35
             }
             # limiar padrão (full) e limiar baixo (para entradas parciais)
-            self.threshold = 0.15
-            self.threshold_low = 0.10
+            self.threshold = 0.24
+            self.threshold_low = 0.16
         else:
             self.weights = weights or {
                 'mean_reversion': 0.25,

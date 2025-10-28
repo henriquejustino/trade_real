@@ -51,18 +51,18 @@ class Settings(BaseSettings):
     REQUIRE_MTF_ALIGNMENT: bool = True  # True = conservador (exige alinhamento), False = agressivo
     
     # Risk Management
-    RISK_PER_TRADE: Decimal = Decimal("0.015")  # 2% of equity per trade
+    RISK_PER_TRADE: Decimal = Decimal("0.015")  # 1.2% of equity per trade
     MAX_OPEN_TRADES: int = 6
     MAX_DRAWDOWN_PERCENT: Decimal = Decimal("0.18")  # 15% circuit breaker
-    MAX_DAILY_LOSS_PERCENT: Decimal = Decimal("0.035")  # 5% daily loss limit
+    MAX_DAILY_LOSS_PERCENT: Decimal = Decimal("0.035")  # 3.5% daily loss limit
     
     # Position Sizing
     MIN_POSITION_SIZE_USD: Decimal = Decimal("10.0")
     MAX_POSITION_SIZE_USD: Decimal = Decimal("10000.0")
     
     # Stop Loss / Take Profit
-    STOP_LOSS_PERCENT: Decimal = Decimal("0.02")  # 2%
-    TAKE_PROFIT_PERCENT: Decimal = Decimal("0.04")  # 4%
+    STOP_LOSS_PERCENT: Decimal = Decimal("0.025")
+    TAKE_PROFIT_PERCENT: Decimal = Decimal("0.04")
     USE_TRAILING_STOP: bool = True
     TRAILING_STOP_ATR_MULTIPLIER: Decimal = Decimal("2.0")
 

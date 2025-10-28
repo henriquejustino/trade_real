@@ -390,7 +390,7 @@ class BacktestEngine:
                     entry_history.tail(500)
                 )
                 
-                if signal in ['BUY', 'SELL'] and strength > 0.4:  # Reduzido de 0.5 para 0.4 (20% mais permissivo)
+                if signal in ['BUY', 'SELL'] and strength > 0.49:  # Reduzido de 0.5 para 0.4 (20% mais permissivo)
                     self._open_trade(
                         symbol,
                         signal,
