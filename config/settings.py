@@ -267,3 +267,41 @@ class Settings(BaseSettings):
                 "Testnet configuration validation failed:\n" + 
                 "\n".join(f"  - {e}" for e in errors)
             )
+        
+    def sync_with_testnet(self) -> None:
+        """
+        Sincroniza o relógio local com o testnet
+        Chamado uma vez na inicialização
+        """
+        from core.exchange import BinanceExchange
+        import logging
+        
+        logger = logging.getLogger('TradingBot')
+        
+        try:
+            api_key, api_secret = self.get_api_credentials(testnet=True)
+            exchange = BinanceExchange(api_key, api_secret, testnet=True)
+            
+            server_time = exchange.get_server_time()
+            local_time = datetime.utcnow()
+            
+            time_diff = (server_time - local_time).total_seconds()
+            
+            if abs(time_diff) > 60:  # Mais de 1 minuto de diferença
+                logger.warning(
+                    f"⚠️ Time sync: Server time {time_diff:.0f}s ahead of local time"
+                )
+                logger.warning(
+                    f"   Server: {server_time}"
+                )
+                logger.warning(
+                    f"   Local:  {local_time}"
+                )
+                logger.warning(
+                    f"   Consider syncing your system clock!"
+                )
+            else:
+                logger.info("✓ Time is synced with testnet")
+                
+        except Exception as e:
+            logger.warning(f"Could not sync time with testnet: {e}")

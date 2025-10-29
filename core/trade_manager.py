@@ -21,7 +21,6 @@ from db.models import (
     DatabaseManager, Trade, Order, Balance, Performance
 )
 
-
 class TestnetTrade:
     """Representa uma posição aberta no testnet com suporte a partial TP (igual backtest)"""
     
@@ -43,6 +42,7 @@ class TestnetTrade:
         self.entry_time = entry_time
         self.stop_loss = stop_loss
         self.take_profit = take_profit
+        
         
         # Take Profit Parcial (3 níveis) - IGUAL AO BACKTEST
         distance = abs(take_profit - entry_price)
@@ -209,6 +209,8 @@ class TradeManager:
         # Validate configuration
         if mode == 'testnet':
             settings.validate_for_testnet()
+            # 🔴 ADICIONE ISTO (nova sincronização):
+            settings.sync_with_testnet()
         else:
             settings.validate_for_live_trading()
         
@@ -239,7 +241,7 @@ class TradeManager:
         
         # State
         self.running = False
-        self.open_trades: Dict[str, TestnetTrade] = {}  # MUDADO PARA TestnetTrade
+        self.open_trades: Dict[str, TestnetTrade] = {}
         self.last_signal_time: Dict[str, datetime] = {}
         
         # Reconcile with exchange on startup
@@ -332,7 +334,7 @@ class TradeManager:
             self.logger.error(f"Failed to update balance: {e}")
     
     def start(self) -> None:
-        """Start the trading loop"""
+        """Start the trading loop com verificação de data e intervalo inteligente"""
         self.running = True
         self.logger.info(f"🚀 Starting {self.mode} trading loop...")
         
@@ -347,21 +349,65 @@ class TradeManager:
         
         try:
             while self.running:
-                self._trading_loop()
-                time.sleep(60)  # Check every minute
+                try:
+                    self._trading_loop()
+                except Exception as e:
+                    self.logger.error(f"Trading loop error: {e}", exc_info=True)
+                    # Continue executando mesmo com erro
+                
+                # 🔴 CORREÇÃO: Sleep inteligente baseado no timeframe
+                sleep_time = self._calculate_sleep_time()
+                self.logger.debug(f"Sleeping for {sleep_time}s until next check...")
+                time.sleep(sleep_time)
                 
         except KeyboardInterrupt:
             self.logger.info("Received stop signal")
         finally:
             self.stop()
+
+    def _calculate_sleep_time(self) -> float:
+        """
+        Calcula sleep time baseado no timeframe da entrada
+        Garante que não perde candles
+        """
+        interval = self.settings.ENTRY_TIMEFRAME
+        
+        # Mapeamento interval → minutos
+        interval_map = {
+            '1m': 1,
+            '5m': 5,
+            '15m': 15,
+            '30m': 30,
+            '1h': 60,
+            '4h': 240,
+            '1d': 1440,
+        }
+        
+        minutes = interval_map.get(interval, 60)
+        
+        # Sleep = (interval - 5 segundos de buffer) convertido para segundos
+        # Exemplo: 1h = 60min → sleep 55min = 3300s
+        sleep_seconds = (minutes * 60) - 5
+        
+        # Mínimo 10s, máximo 60s para não ficar muito tempo sem checar
+        sleep_seconds = max(10, min(sleep_seconds, 60))
+        
+        return sleep_seconds
     
     def _trading_loop(self) -> None:
-        """Main trading loop iteration"""
+        """Main trading loop iteration com sincronização de candles"""
         try:
             session = self.db_manager.get_session()
             
             # Update equity tracking
-            total_equity = self.exchange.get_total_balance_usdt()
+            try:
+                total_equity = self.exchange.get_total_balance_usdt()
+                self.logger.debug(f"Current equity: ${total_equity:.2f}")
+            except Exception as e:
+                self.logger.error(f"Failed to get equity: {e}")
+                session.close()
+                return
+            
             self.risk_manager.update_equity_tracking(total_equity)
             
             # Check circuit breaker
@@ -375,19 +421,26 @@ class TradeManager:
                     "ERROR"
                 )
                 self.stop()
+                session.close()
                 return
             
             # Update open trades
-            self._update_open_trades(session)
+            try:
+                self._update_open_trades(session)
+            except Exception as e:
+                self.logger.error(f"Error updating trades: {e}", exc_info=True)
             
             # Check for new opportunities
-            self._scan_opportunities(session)
+            try:
+                self._scan_opportunities(session)
+            except Exception as e:
+                self.logger.error(f"Error scanning opportunities: {e}", exc_info=True)
             
             session.commit()
             session.close()
             
         except Exception as e:
-            self.logger.error(f"Trading loop error: {e}", exc_info=True)
+            self.logger.error(f"Trading loop fatal error: {e}", exc_info=True)
     
     def _update_open_trades(self, session: Session) -> None:
         """Update status of open trades - IGUAL AO BACKTEST"""
@@ -534,37 +587,69 @@ class TradeManager:
             session.rollback()
     
     def _scan_opportunities(self, session: Session) -> None:
-        """Scan for new trading opportunities - IGUAL AO BACKTEST"""
-        # Check if we can open new trades
+        """Scan for new trading opportunities - compatível com testnet"""
+        
         can_trade, reason = self.risk_manager.can_open_trade(len(self.open_trades))
         
         if not can_trade:
             self.logger.debug(f"Cannot open new trades: {reason}")
             return
         
-        # Scan each trading pair
         for symbol in self.settings.TRADING_PAIRS:
             try:
-                # Skip if already have open trade on this pair
                 if symbol in self.open_trades:
+                    self.logger.debug(f"Skipping {symbol}: already have open trade")
                     continue
                 
-                # Avoid excessive signal frequency (2 min cooldown)
                 last_signal = self.last_signal_time.get(symbol)
                 if last_signal and (datetime.utcnow() - last_signal).seconds < 120:
+                    self.logger.debug(f"Skipping {symbol}: in cooldown period")
                     continue
                 
-                # Fetch data for both timeframes
-                primary_df = self.exchange.get_klines(
-                    symbol,
-                    self.settings.PRIMARY_TIMEFRAME,
-                    limit=500
-                )
-                entry_df = self.exchange.get_klines(
-                    symbol,
-                    self.settings.ENTRY_TIMEFRAME,
-                    limit=500
-                )
+                try:
+                    self.logger.debug(f"Fetching data for {symbol}...")
+                    
+                    # 🔴 REMOVIDO: end_time=now (testnet não suporta)
+                    primary_df = self.exchange.get_klines(
+                        symbol,
+                        self.settings.PRIMARY_TIMEFRAME,
+                        limit=500
+                        # ← SEM end_time
+                    )
+                    
+                    entry_df = self.exchange.get_klines(
+                        symbol,
+                        self.settings.ENTRY_TIMEFRAME,
+                        limit=500
+                        # ← SEM end_time
+                    )
+                    
+                except ValueError as e:
+                    self.logger.warning(f"❌ Failed to fetch data for {symbol}: {e}")
+                    continue
+                except Exception as e:
+                    self.logger.error(f"Unexpected error fetching data for {symbol}: {e}", exc_info=True)
+                    continue
+                
+                if primary_df.empty or entry_df.empty:
+                    self.logger.warning(
+                        f"❌ Empty DataFrame for {symbol}: "
+                        f"primary={len(primary_df)}, entry={len(entry_df)}"
+                    )
+                    continue
+                
+                latest_entry_time = entry_df.index[-1]
+                age_seconds = (datetime.utcnow() - latest_entry_time.replace(tzinfo=None)).total_seconds()
+                
+                # 🔴 RELAXADO: Aceita dados até 1h atrasados (testnet é assim)
+                max_age = 3600  # 1 hora
+                
+                if age_seconds > max_age:
+                    self.logger.warning(
+                        f"⚠️ Stale data for {symbol}: latest candle is {age_seconds:.0f}s old "
+                        f"(this is normal for testnet)"
+                    )
+                    # Continua mesmo com dados atrasados
                 
                 # Multi-timeframe signal analysis
                 signal, strength, metadata = self.mtf_analyzer.analyze(
@@ -572,18 +657,58 @@ class TradeManager:
                     entry_df
                 )
                 
+                self.logger.info(
+                    f"📊 {symbol}: Signal={signal:5s} | Strength={strength:.2f} | "
+                    f"Primary={metadata.get('primary_signal', 'N/A'):5s} | "
+                    f"Aligned={metadata.get('aligned', False)} | "
+                    f"Age={age_seconds:.0f}s"
+                )
+                
+                # Abrir trade se sinal forte
                 if signal in ['BUY', 'SELL'] and strength > 0.48:
                     self.logger.info(
-                        f"✅ Signal detected: {symbol} | {signal} | "
-                        f"Strength={strength:.2f}"
+                        f"✅ TRADE SIGNAL for {symbol}: {signal} (strength={strength:.2f})"
                     )
                     self._execute_trade(
                         session, symbol, signal, strength, entry_df
                     )
                     self.last_signal_time[symbol] = datetime.utcnow()
+                else:
+                    # Log quando sinal é rejeitado
+                    if signal in ['BUY', 'SELL']:
+                        self.logger.debug(
+                            f"⚠️ Signal {signal} for {symbol} rejected: "
+                            f"strength {strength:.2f} below threshold 0.48"
+                        )
             
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
+
+    def _get_max_data_age(self) -> int:
+        """
+        Calcula idade máxima aceitável dos dados em segundos
+        baseado no timeframe
+        """
+        interval = self.settings.ENTRY_TIMEFRAME
+        
+        # Mapeamento interval → minutos
+        interval_map = {
+            '1m': 1,
+            '5m': 5,
+            '15m': 15,
+            '30m': 30,
+            '1h': 60,
+            '4h': 240,
+            '1d': 1440,
+        }
+        
+        minutes = interval_map.get(interval, 60)
+        
+        # Dados podem estar atrasados por até 1 candle inteiro + 5min buffer
+        # Exemplo: timeframe 1h → max age = 60min + 5min = 3900s
+        max_age_seconds = (minutes * 60) + 300  # +5min buffer
+        
+        return max_age_seconds
     
     def _execute_trade(
         self,

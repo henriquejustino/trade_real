@@ -178,7 +178,7 @@ class BinanceExchange:
         limit: int = 1000
     ) -> pd.DataFrame:
         """
-        Get historical klines/candlestick data
+        Get historical klines/candlestick data com validação robusta
         
         Args:
             symbol: Trading pair symbol
@@ -189,6 +189,9 @@ class BinanceExchange:
             
         Returns:
             DataFrame with OHLCV data
+            
+        Raises:
+            ValueError: Se dados estão inválidos ou insuficientes
         """
         self.rate_limiter.wait_if_needed()
         
@@ -203,6 +206,13 @@ class BinanceExchange:
         
         klines = self.client.get_klines(**kwargs)
         
+        # 🔴 VALIDAÇÃO 1: Verifica se retornou dados
+        if not klines or len(klines) == 0:
+            raise ValueError(
+                f"No kline data returned for {symbol} {interval}. "
+                f"Possible causes: symbol invalid, date range empty, or API issue."
+            )
+        
         # Convert to DataFrame
         df = pd.DataFrame(klines, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
@@ -210,16 +220,84 @@ class BinanceExchange:
             'taker_buy_quote', 'ignore'
         ])
         
+        # 🔴 VALIDAÇÃO 2: Verifica se tem coluna de timestamp
+        if 'timestamp' not in df.columns:
+            raise ValueError(f"Missing 'timestamp' column in kline data for {symbol}")
+        
         # Convert types
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+        try:
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+            
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+        except Exception as e:
+            raise ValueError(f"Failed to convert kline data types for {symbol}: {e}")
         
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
+        # 🔴 VALIDAÇÃO 3: Verifica se tem NaN após conversão
+        if df[['open', 'high', 'low', 'close', 'volume']].isna().any().any():
+            nan_count = df[['open', 'high', 'low', 'close', 'volume']].isna().sum().sum()
+            self.logger.warning(
+                f"⚠️ {symbol} {interval}: {nan_count} NaN values found after conversion. "
+                f"Dropping NaN rows..."
+            )
+            df = df.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
+            
+            if len(df) < 10:
+                raise ValueError(
+                    f"Too many NaN values in kline data for {symbol} {interval}. "
+                    f"Only {len(df)} valid candles remain."
+                )
         
+        # 🔴 VALIDAÇÃO 4: Verifica se tem candles suficientes após limpeza
+        if len(df) < 20:
+            raise ValueError(
+                f"Insufficient kline data for {symbol} {interval}: "
+                f"only {len(df)} candles (minimum 20 required)"
+            )
+        
+        # 🔴 VALIDAÇÃO 5: Verifica se timestamps estão em ordem e sem gaps excessivos
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        
+        time_diffs = df['timestamp'].diff().dt.total_seconds()
+        expected_interval_seconds = self._interval_to_seconds(interval)
+        
+        # Tolerância de 10% para gaps (testnet pode ser inconsistente)
+        max_gap = expected_interval_seconds * 1.1
+        
+        large_gaps = time_diffs[time_diffs > max_gap]
+        if len(large_gaps) > 0 and len(large_gaps) > len(df) * 0.1:  # Se >10% tem gaps
+            self.logger.warning(
+                f"⚠️ {symbol} {interval}: {len(large_gaps)} large gaps detected. "
+                f"Data may be inconsistent. Continuing anyway..."
+            )
+        
+        # Reset index to timestamp e retorna
         df.set_index('timestamp', inplace=True)
+        result_df = df[['open', 'high', 'low', 'close', 'volume']].copy()
         
-        return df[['open', 'high', 'low', 'close', 'volume']]
+        # 🔴 VALIDAÇÃO 6: Log de sucesso com info
+        self.logger.debug(
+            f"✓ Loaded {len(result_df)} candles for {symbol} {interval} "
+            f"[{result_df.index[0]} → {result_df.index[-1]}]"
+        )
+        
+        return result_df
+    
+    def _interval_to_seconds(self, interval: str) -> int:
+        """Converte interval string para segundos"""
+        multipliers = {
+            'm': 60,
+            'h': 3600,
+            'd': 86400,
+            'w': 604800
+        }
+        
+        number = int(interval[:-1])
+        unit = interval[-1]
+        
+        return number * multipliers.get(unit, 3600)
     
     def create_order(
         self,

@@ -475,7 +475,7 @@ class MultiTimeframeAnalyzer:
         entry_df: pd.DataFrame
     ) -> Tuple[str, float, Dict[str, any]]:
         """
-        Analyze signals across timeframes
+        Analyze signals across timeframes com validação robusta
         
         Args:
             primary_df: OHLCV data for primary timeframe
@@ -484,11 +484,41 @@ class MultiTimeframeAnalyzer:
         Returns:
             Tuple of (signal, strength, metadata)
         """
+        # 🔴 VALIDAÇÃO: DataFrames válidos
+        if primary_df.empty:
+            self.logger.warning("Primary DataFrame is empty!")
+            return 'HOLD', 0.0, {'reason': 'Empty primary DataFrame'}
+        
+        if entry_df.empty:
+            self.logger.warning("Entry DataFrame is empty!")
+            return 'HOLD', 0.0, {'reason': 'Empty entry DataFrame'}
+        
+        # 🔴 VALIDAÇÃO: Timestamps sincronizados
+        primary_latest = primary_df.index[-1]
+        entry_latest = entry_df.index[-1]
+        
+        # Se o entry é mais recente que primary, isso é OK
+        # Mas se primary é muito mais recente, há problema
+        time_diff = (primary_latest - entry_latest).total_seconds() / 3600  # em horas
+        
+        if time_diff > 2:  # Mais de 2 horas de diferença é suspeito
+            self.logger.warning(
+                f"⚠️ Large timestamp difference: primary={primary_latest}, entry={entry_latest}"
+            )
+        
         # Get primary trend
-        primary_signal, primary_strength = self.strategy.generate_signal(primary_df)
+        try:
+            primary_signal, primary_strength = self.strategy.generate_signal(primary_df)
+        except Exception as e:
+            self.logger.error(f"Error generating primary signal: {e}", exc_info=True)
+            return 'HOLD', 0.0, {'reason': f'Primary signal error: {str(e)}'}
         
         # Get entry signal
-        entry_signal, entry_strength = self.strategy.generate_signal(entry_df)
+        try:
+            entry_signal, entry_strength = self.strategy.generate_signal(entry_df)
+        except Exception as e:
+            self.logger.error(f"Error generating entry signal: {e}", exc_info=True)
+            return 'HOLD', 0.0, {'reason': f'Entry signal error: {str(e)}'}
         
         # Modo CONSERVADOR (require_alignment = True)
         if self.require_alignment:
@@ -505,7 +535,7 @@ class MultiTimeframeAnalyzer:
                 combined_strength = (primary_strength * 0.6 + entry_strength * 0.4)
                 
                 self.logger.info(
-                    f"Aligned signals: {primary_signal} "
+                    f"✅ Aligned signals: {primary_signal} "
                     f"(Primary: {primary_strength:.2f}, Entry: {entry_strength:.2f})"
                 )
                 
@@ -533,14 +563,14 @@ class MultiTimeframeAnalyzer:
                 if entry_signal == primary_signal:
                     combined_strength = (primary_strength * 0.6 + entry_strength * 0.4)
                     self.logger.info(
-                        f"Aligned signals (aggressive): {entry_signal} "
+                        f"✅ Aligned signals (aggressive): {entry_signal} "
                         f"(Primary: {primary_strength:.2f}, Entry: {entry_strength:.2f})"
                     )
                 else:
                     # Usa entry mesmo sem alinhamento, mas com strength reduzida
                     combined_strength = entry_strength * 0.7  # Penalidade de 30%
                     self.logger.info(
-                        f"Non-aligned signal (aggressive): Entry={entry_signal}({entry_strength:.2f}), "
+                        f"⚠️ Non-aligned signal (aggressive): Entry={entry_signal}({entry_strength:.2f}), "
                         f"Primary={primary_signal}({primary_strength:.2f}) - Using entry with penalty"
                     )
                 
@@ -556,9 +586,9 @@ class MultiTimeframeAnalyzer:
             # Se entry não tem sinal, tentar primary
             elif primary_signal in ['BUY', 'SELL']:
                 self.logger.info(
-                    f"Using primary signal (aggressive): {primary_signal} ({primary_strength:.2f})"
+                    f"ℹ️ Using primary signal (aggressive): {primary_signal} ({primary_strength:.2f})"
                 )
-                return primary_signal, primary_strength * 0.8, {  # Penalidade por usar só primary
+                return primary_signal, primary_strength * 0.8, {
                     'primary_signal': primary_signal,
                     'primary_strength': primary_strength,
                     'entry_signal': entry_signal,
