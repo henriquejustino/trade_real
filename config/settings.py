@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     PRIMARY_TIMEFRAME: str = "4h"  # Main trend detection
     ENTRY_TIMEFRAME: str = "1h"    # Entry signals
     ADDITIONAL_TIMEFRAMES: List[str] = ["15m", "5m"]
+
+    # # TESTEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+    # PRIMARY_TIMEFRAME: str = "15m"  # Main trend detection
+    # ENTRY_TIMEFRAME: str = "5m"    # Entry signals
+    # ADDITIONAL_TIMEFRAMES: List[str] = ["5m", "1m"]
     
     # Strategy Configuration
     # STRATEGY_MODE: str = "ensemble_ultra"
