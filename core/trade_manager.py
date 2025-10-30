@@ -6,6 +6,8 @@ SINCRONIZADO COM BACKTEST - Mesmos parametros e lógica
 
 import logging
 import time
+import shutil
+from pathlib import Path
 from typing import List, Dict, Optional
 from decimal import Decimal
 from datetime import datetime, timedelta
@@ -20,6 +22,75 @@ from core.utils import notify, safe_decimal
 from db.models import (
     DatabaseManager, Trade, Order, Balance, Performance
 )
+
+class BackupManager:
+    """Gerencia backup automático de database"""
+    
+    def __init__(self, settings):
+        """
+        Initialize backup manager
+        
+        Args:
+            settings: Settings object
+        """
+        self.logger = logging.getLogger('TradingBot.BackupManager')
+        self.db_path = Path(settings.DATABASE_URL.replace('sqlite:///', ''))
+        self.backup_dir = Path('db/backups')
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.logger.info(f"Backup manager initialized. Backup dir: {self.backup_dir}")
+    
+    def backup(self) -> bool:
+        """
+        Fazer backup do database
+        
+        Returns:
+            True se sucesso, False se falhou
+        """
+        try:
+            if not self.db_path.exists():
+                self.logger.warning(f"Database file not found: {self.db_path}")
+                return False
+            
+            # Nome do backup: db_backup_2025-10-29_14-30-45.db
+            timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+            backup_name = f"db_backup_{timestamp}.db"
+            backup_path = self.backup_dir / backup_name
+            
+            # Copiar arquivo
+            shutil.copy2(self.db_path, backup_path)
+            
+            self.logger.info(f"✅ Backup criado: {backup_path}")
+            
+            # Limpar backups antigos (manter apenas últimos 7)
+            self._cleanup_old_backups()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Backup falhou: {e}", exc_info=True)
+            return False
+    
+    def _cleanup_old_backups(self, keep_count: int = 7) -> None:
+        """
+        Deletar backups antigos (manter apenas últimos N)
+        
+        Args:
+            keep_count: Número de backups para manter
+        """
+        try:
+            backups = sorted(self.backup_dir.glob('db_backup_*.db'))
+            
+            if len(backups) > keep_count:
+                to_delete = backups[:-keep_count]
+                
+                for backup in to_delete:
+                    backup.unlink()
+                    self.logger.info(f"Deletado backup antigo: {backup.name}")
+                    
+        except Exception as e:
+            self.logger.error(f"Erro ao limpar backups antigos: {e}")
+
 
 class TestnetTrade:
     """Representa uma posição aberta no testnet com suporte a partial TP (igual backtest)"""
@@ -195,13 +266,8 @@ class TradeManager:
     """Manages trading operations and positions"""
     
     def __init__(self, settings, mode: str = 'live'):
-        """
-        Initialize trade manager
+        """Initialize trade manager COM BACKUP MANAGER"""
         
-        Args:
-            settings: Settings object
-            mode: Operation mode ('live' or 'testnet')
-        """
         self.settings = settings
         self.mode = mode
         self.logger = logging.getLogger(f'TradingBot.TradeManager.{mode}')
@@ -209,7 +275,6 @@ class TradeManager:
         # Validate configuration
         if mode == 'testnet':
             settings.validate_for_testnet()
-            # 🔴 ADICIONE ISTO (nova sincronização):
             settings.sync_with_testnet()
         else:
             settings.validate_for_live_trading()
@@ -219,6 +284,9 @@ class TradeManager:
         
         # Database
         self.db_manager = DatabaseManager(settings.DATABASE_URL)
+        
+        # 🔴 ADICIONE ISTO: Backup manager
+        self.backup_manager = BackupManager(settings)
         
         # Exchange
         testnet = (mode == 'testnet')
@@ -243,9 +311,13 @@ class TradeManager:
         self.running = False
         self.open_trades: Dict[str, TestnetTrade] = {}
         self.last_signal_time: Dict[str, datetime] = {}
+        self.last_backup_time: datetime = datetime.utcnow()
         
         # Reconcile with exchange on startup
         self._reconcile_state()
+        
+        # 🔴 FAZER BACKUP INICIAL
+        self.backup_manager.backup()
         
         self.logger.info(f"✅ Trade Manager initialized in {mode} mode")
     
@@ -334,7 +406,7 @@ class TradeManager:
             self.logger.error(f"Failed to update balance: {e}")
     
     def start(self) -> None:
-        """Start the trading loop com verificação de data e intervalo inteligente"""
+        """Start the trading loop com circuit breaker check mais frequente"""
         self.running = True
         self.logger.info(f"🚀 Starting {self.mode} trading loop...")
         
@@ -348,22 +420,94 @@ class TradeManager:
         )
         
         try:
+            last_cb_check = datetime.utcnow()
+            
             while self.running:
                 try:
+                    # 🔴 ADICIONE ISTO: Check circuit breaker a cada 10 segundos
+                    now = datetime.utcnow()
+                    if (now - last_cb_check).seconds > 10:
+                        triggered, reason = self.risk_manager.is_circuit_breaker_triggered()
+                        if triggered:
+                            self.logger.error(f"🚨 CIRCUIT BREAKER (mid-check): {reason}")
+                            notify(
+                                self.settings,
+                                "🚨 Circuit Breaker Triggered (Emergency)",
+                                reason,
+                                "ERROR"
+                            )
+                            self.backup_manager.backup()
+                            self.stop()
+                            break
+                        
+                        last_cb_check = now
+                    
+                    # Wait for candle
+                    self._wait_for_candle_close()
+                    
+                    # Execute trading loop
                     self._trading_loop()
+                    
                 except Exception as e:
                     self.logger.error(f"Trading loop error: {e}", exc_info=True)
-                    # Continue executando mesmo com erro
                 
-                # 🔴 CORREÇÃO: Sleep inteligente baseado no timeframe
-                sleep_time = self._calculate_sleep_time()
-                self.logger.debug(f"Sleeping for {sleep_time}s until next check...")
-                time.sleep(sleep_time)
+                # Pequeno delay
+                time.sleep(5)
                 
         except KeyboardInterrupt:
             self.logger.info("Received stop signal")
         finally:
+            # 🔴 FAZER BACKUP FINAL
+            self.backup_manager.backup()
             self.stop()
+    
+    def _wait_for_candle_close(self) -> None:
+        """
+        Aguarda o fechamento do candle atual
+        Garante que você analisa candles COMPLETOS, não em progresso
+        
+        Exemplo com timeframe 1h:
+        - Se são 13:30 (meio da hora), espera até 13:59:30
+        - Aí dorme 30 segundos
+        - Acorda em 14:00 com candle de 13:00-14:00 FECHADO
+        """
+        interval = self.settings.ENTRY_TIMEFRAME
+        
+        # Mapeamento interval → minutos
+        interval_map = {
+            '1m': 1,
+            '5m': 5,
+            '15m': 15,
+            '30m': 30,
+            '1h': 60,
+            '4h': 240,
+            '1d': 1440,
+        }
+        
+        minutes = interval_map.get(interval, 60)
+        
+        # Calcular segundos até próximo fechamento de candle
+        now = datetime.utcnow()
+        
+        # Quantos segundos já se passaram neste período?
+        # Exemplo: em timeframe 1h, se são 13:45, se passaram 45min * 60s = 2700s
+        seconds_into_period = (now.hour * 3600 + now.minute * 60 + now.second) % (minutes * 60)
+        
+        # Quantos segundos faltam para o próximo candle fechar?
+        seconds_until_next = (minutes * 60) - seconds_into_period
+        
+        # Esperar até 30s ANTES do fechamento
+        wait_time = seconds_until_next - 30
+        
+        # Se faltarem menos de 5 segundos, não espera (muito perto)
+        if wait_time > 5:
+            self.logger.info(
+                f"⏱️ Waiting {wait_time:.0f}s for candle to close "
+                f"({seconds_until_next:.0f}s remaining in this candle)"
+            )
+            time.sleep(wait_time)
+        else:
+            self.logger.debug(f"Candle closing soon, skipping wait")
 
     def _calculate_sleep_time(self) -> float:
         """
@@ -395,9 +539,21 @@ class TradeManager:
         return sleep_seconds
     
     def _trading_loop(self) -> None:
-        """Main trading loop iteration com sincronização de candles"""
+        """Main trading loop com backup periódico"""
         try:
             session = self.db_manager.get_session()
+            
+            # 🔴 ADICIONE ISTO: Fazer backup a cada 1 hora
+            now = datetime.utcnow()
+            time_since_backup = (now - self.last_backup_time).total_seconds()
+            
+            if time_since_backup > 3600:  # 1 hora = 3600 segundos
+                self.logger.info("⏰ Horário de backup periódico...")
+                self.backup_manager.backup()
+                self.last_backup_time = now
+            
+            # Wait for candle
+            self._wait_for_candle_close()
             
             # Update equity tracking
             try:
@@ -420,6 +576,8 @@ class TradeManager:
                     reason,
                     "ERROR"
                 )
+                # 🔴 FAZER BACKUP ANTES DE PARAR!
+                self.backup_manager.backup()
                 self.stop()
                 session.close()
                 return
@@ -587,7 +745,7 @@ class TradeManager:
             session.rollback()
     
     def _scan_opportunities(self, session: Session) -> None:
-        """Scan for new trading opportunities - compatível com testnet"""
+        """Scan for new trading opportunities com validação robusta"""
         
         can_trade, reason = self.risk_manager.can_open_trade(len(self.open_trades))
         
@@ -601,6 +759,7 @@ class TradeManager:
                     self.logger.debug(f"Skipping {symbol}: already have open trade")
                     continue
                 
+                # Avoid excessive signal frequency (2 min cooldown)
                 last_signal = self.last_signal_time.get(symbol)
                 if last_signal and (datetime.utcnow() - last_signal).seconds < 120:
                     self.logger.debug(f"Skipping {symbol}: in cooldown period")
@@ -609,19 +768,17 @@ class TradeManager:
                 try:
                     self.logger.debug(f"Fetching data for {symbol}...")
                     
-                    # 🔴 REMOVIDO: end_time=now (testnet não suporta)
+                    # 🔴 SEM end_time (testnet não suporta)
                     primary_df = self.exchange.get_klines(
                         symbol,
                         self.settings.PRIMARY_TIMEFRAME,
                         limit=500
-                        # ← SEM end_time
                     )
                     
                     entry_df = self.exchange.get_klines(
                         symbol,
                         self.settings.ENTRY_TIMEFRAME,
                         limit=500
-                        # ← SEM end_time
                     )
                     
                 except ValueError as e:
@@ -631,6 +788,7 @@ class TradeManager:
                     self.logger.error(f"Unexpected error fetching data for {symbol}: {e}", exc_info=True)
                     continue
                 
+                # 🔴 VALIDAÇÃO: DataFrames não vazios
                 if primary_df.empty or entry_df.empty:
                     self.logger.warning(
                         f"❌ Empty DataFrame for {symbol}: "
@@ -638,18 +796,17 @@ class TradeManager:
                     )
                     continue
                 
+                # 🔴 VALIDAÇÃO: Timestamps recentes (relaxado para testnet)
                 latest_entry_time = entry_df.index[-1]
                 age_seconds = (datetime.utcnow() - latest_entry_time.replace(tzinfo=None)).total_seconds()
                 
-                # 🔴 RELAXADO: Aceita dados até 1h atrasados (testnet é assim)
-                max_age = 3600  # 1 hora
+                # Aceita dados até 1h atrasados (testnet é assim)
+                max_age = 3600
                 
                 if age_seconds > max_age:
                     self.logger.warning(
-                        f"⚠️ Stale data for {symbol}: latest candle is {age_seconds:.0f}s old "
-                        f"(this is normal for testnet)"
+                        f"⚠️ Stale data for {symbol}: latest candle is {age_seconds:.0f}s old"
                     )
-                    # Continua mesmo com dados atrasados
                 
                 # Multi-timeframe signal analysis
                 signal, strength, metadata = self.mtf_analyzer.analyze(
@@ -657,6 +814,7 @@ class TradeManager:
                     entry_df
                 )
                 
+                # 🔴 LOG DETALHADO de todo sinal (mesmo HOLD)
                 self.logger.info(
                     f"📊 {symbol}: Signal={signal:5s} | Strength={strength:.2f} | "
                     f"Primary={metadata.get('primary_signal', 'N/A'):5s} | "
@@ -664,8 +822,8 @@ class TradeManager:
                     f"Age={age_seconds:.0f}s"
                 )
                 
-                # Abrir trade se sinal forte
-                if signal in ['BUY', 'SELL'] and strength > 0.48:
+                # 🔴 THRESHOLD: Aceita sinais acima de 0.35 (reduzido para testnet)
+                if signal in ['BUY', 'SELL'] and strength > 0.35:
                     self.logger.info(
                         f"✅ TRADE SIGNAL for {symbol}: {signal} (strength={strength:.2f})"
                     )

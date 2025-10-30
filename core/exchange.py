@@ -311,12 +311,12 @@ class BinanceExchange:
         test: bool = False
     ) -> Dict[str, Any]:
         """
-        Create an order
+        Create an order COM TIMEOUT
         
         Args:
             symbol: Trading pair symbol
             side: BUY or SELL
-            order_type: MARKET, LIMIT, STOP_LOSS, STOP_LOSS_LIMIT, etc.
+            order_type: MARKET, LIMIT, STOP_LOSS, etc.
             quantity: Order quantity
             price: Limit price (for LIMIT orders)
             stop_price: Stop price (for STOP orders)
@@ -325,7 +325,13 @@ class BinanceExchange:
             
         Returns:
             Order response dictionary
+            
+        Raises:
+            TimeoutError: Se ordem demora mais de 30s
+            ValueError: Se validação falhar
         """
+        import signal
+        
         # Get symbol filters
         filters = self.get_symbol_filters(symbol)
         symbol_info = self.get_symbol_info(symbol)
@@ -375,42 +381,62 @@ class BinanceExchange:
         if not is_valid:
             raise ValueError(f"Order validation failed: {error_msg}")
         
-        # Create order
+        # 🔴 CORREÇÃO: Adicionar timeout de 30 segundos
+        def timeout_handler(signum, frame):
+            raise TimeoutError(f"Order creation timeout after 30s for {symbol}")
+        
+        # Create order COM TIMEOUT
         self.rate_limiter.wait_if_needed()
         
         try:
-            if test or self.testnet:
-                # Use test order for testnet or test flag
-                response = self.client.create_test_order(**params)
+            # Configurar signal de timeout (Linux/Mac)
+            if hasattr(signal, 'SIGALRM'):
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(30)  # 30 segundos de timeout
+            
+            try:
+                if test or self.testnet:
+                    response = self.client.create_test_order(**params)
+                    
+                    if not response:
+                        response = {
+                            'symbol': symbol,
+                            'orderId': int(time.time() * 1000),
+                            'clientOrderId': f"test_{int(time.time() * 1000)}",
+                            'transactTime': int(time.time() * 1000),
+                            'price': params.get('price', '0'),
+                            'origQty': params['quantity'],
+                            'executedQty': params['quantity'] if order_type == 'MARKET' else '0',
+                            'status': 'FILLED' if order_type == 'MARKET' else 'NEW',
+                            'type': order_type,
+                            'side': side,
+                        }
+                else:
+                    response = self.client.create_order(**params)
                 
-                # Test orders return empty dict on success
-                # Create a mock response
-                if not response:
-                    response = {
-                        'symbol': symbol,
-                        'orderId': int(time.time() * 1000),
-                        'clientOrderId': f"test_{int(time.time() * 1000)}",
-                        'transactTime': int(time.time() * 1000),
-                        'price': params.get('price', '0'),
-                        'origQty': params['quantity'],
-                        'executedQty': params['quantity'] if order_type == 'MARKET' else '0',
-                        'status': 'FILLED' if order_type == 'MARKET' else 'NEW',
-                        'type': order_type,
-                        'side': side,
-                    }
-            else:
-                response = self.client.create_order(**params)
+                # Cancelar timeout se sucesso
+                if hasattr(signal, 'SIGALRM'):
+                    signal.alarm(0)
+                
+                self.logger.info(
+                    f"Order created: {side} {quantity_str} {symbol} @ "
+                    f"{params.get('price', 'MARKET')}"
+                )
+                
+                return response
+                
+            except TimeoutError as e:
+                self.logger.error(f"🚨 ORDER TIMEOUT: {e}")
+                raise
             
-            self.logger.info(
-                f"Order created: {side} {quantity_str} {symbol} @ "
-                f"{params.get('price', 'MARKET')}"
-            )
-            
-            return response
-            
-        except BinanceAPIException as e:
-            self.logger.error(f"Order creation failed: {e}")
-            raise
+            except BinanceAPIException as e:
+                self.logger.error(f"Order creation failed: {e}")
+                raise
+                
+        finally:
+            # Garantir que cancel timeout
+            if hasattr(signal, 'SIGALRM'):
+                signal.alarm(0)
     
     @retry_with_backoff(max_retries=3, exceptions=(BinanceRequestException,))
     def cancel_order(self, symbol: str, order_id: int) -> Dict[str, Any]:

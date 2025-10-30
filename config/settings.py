@@ -43,14 +43,10 @@ class Settings(BaseSettings):
     ENTRY_TIMEFRAME: str = "1h"    # Entry signals
     ADDITIONAL_TIMEFRAMES: List[str] = ["15m", "5m"]
 
-    # # TESTEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
-    # PRIMARY_TIMEFRAME: str = "15m"  # Main trend detection
-    # ENTRY_TIMEFRAME: str = "5m"    # Entry signals
-    # ADDITIONAL_TIMEFRAMES: List[str] = ["5m", "1m"]
-    
-    # Strategy Configuration
-    # STRATEGY_MODE: str = "ensemble_ultra"
-    # REQUIRE_MTF_ALIGNMENT: bool = False
+    # Gerenciamento de backups
+    BACKUP_ENABLED: bool = True
+    BACKUP_INTERVAL_HOURS: int = 4  # Backup a cada 4 hora
+    BACKUP_KEEP_COUNT: int = 5  # Manter últimos 5 backups
 
     STRATEGY_MODE: str = "ensemble_aggressive"  # ensemble, ensemble_aggressive, mean_reversion, breakout, trend_following, ensemble_ultra
     REQUIRE_MTF_ALIGNMENT: bool = True  # True = conservador (exige alinhamento), False = agressivo

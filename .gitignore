@@ -43,6 +43,8 @@ ENV/
 *.sqlite
 *.sqlite3
 db/state.db
+db/backups/
+db/*.db.backup
 
 # Logs
 *.log
