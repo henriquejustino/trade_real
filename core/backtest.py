@@ -230,18 +230,7 @@ class BacktestEngine:
         start_date: str,
         end_date: str
     ) -> pd.DataFrame:
-        """
-        Load historical data for backtesting
         
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Timeframe (e.g., '1h', '4h')
-            start_date: Start date string
-            end_date: End date string
-            
-        Returns:
-            DataFrame with OHLCV data
-        """
         self.logger.info(
             f"Loading data for {symbol} ({timeframe}): {start_date} to {end_date}"
         )
@@ -390,7 +379,7 @@ class BacktestEngine:
                     entry_history.tail(500)
                 )
                 
-                if signal in ['BUY', 'SELL'] and strength > 0.49:  # Reduzido de 0.5 para 0.4 (20% mais permissivo)
+                if signal in ['BUY', 'SELL'] and strength > 0.48:
                     self._open_trade(
                         symbol,
                         signal,

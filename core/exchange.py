@@ -251,7 +251,7 @@ class BinanceExchange:
                 )
         
         # 🔴 VALIDAÇÃO 4: Verifica se tem candles suficientes após limpeza
-        if len(df) < 20:
+        if len(df) < 15:
             raise ValueError(
                 f"Insufficient kline data for {symbol} {interval}: "
                 f"only {len(df)} candles (minimum 20 required)"

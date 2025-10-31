@@ -273,11 +273,11 @@ class EnsembleStrategy(BaseStrategy):
 
         if aggressive:
             self.weights = weights or {
-                'mean_reversion': 0.20,
-                'breakout': 0.45,
+                'mean_reversion': 0.15,
+                'breakout': 0.5,
                 'trend_following': 0.35
             }
-            self.threshold = 0.28
+            self.threshold = 0.24
             self.threshold_low = 0.16
         else:
             self.weights = weights or {

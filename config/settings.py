@@ -57,7 +57,7 @@ SWING_PROFILE = {
     'PRIMARY_TIMEFRAME': '4h',
     'ENTRY_TIMEFRAME': '1h',
     'STRATEGY_MODE': 'ensemble_aggressive',
-    'REQUIRE_MTF_ALIGNMENT': True,
+    'REQUIRE_MTF_ALIGNMENT': False,
     'TRADING_PAIRS': ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"],
     'RISK_PER_TRADE': Decimal("0.015"),
     'MAX_OPEN_TRADES': 6,
@@ -65,7 +65,7 @@ SWING_PROFILE = {
     'MAX_DAILY_LOSS_PERCENT': Decimal("0.035"),
     'MIN_POSITION_SIZE_USD': Decimal("10.0"),
     'MAX_POSITION_SIZE_USD': Decimal("10000.0"),
-    'STOP_LOSS_PERCENT': Decimal("0.020"),
+    'STOP_LOSS_PERCENT': Decimal("0.025"),
     'TAKE_PROFIT_PERCENT': Decimal("0.04"),
     'USE_TRAILING_STOP': True,
     'TRAILING_STOP_ATR_MULTIPLIER': Decimal("2.0"),
@@ -164,8 +164,8 @@ class Settings(BaseSettings):
     )
     
     # Backtest Configuration
-    BACKTEST_START_DATE: str = f"{hoje.year}-07-01"
-    BACKTEST_END_DATE: str = hoje.strftime("%Y-%m-%d")
+    BACKTEST_START_DATE: str = f"{hoje.year}-01-01"
+    BACKTEST_END_DATE: str = hoje.strftime("%Y-10-21")
     BACKTEST_INITIAL_CAPITAL: Decimal = Decimal("10000.0")
     
     # Data Sources
