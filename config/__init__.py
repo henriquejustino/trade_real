@@ -1,7 +1,16 @@
-"""
-Configuration module initialization
-"""
+from .scalping_settings import ScalpingSettings
+from .swing_settings import SwingSettings
 
-from .settings import Settings
+__all__ = ['ScalpingSettings', 'SwingSettings']
 
-__all__ = ['Settings']
+__version__ = '2.0.0'
+
+
+def get_settings_for_mode(mode: str):
+    """Retorna settings apropriados para o modo"""
+    if mode == 'scalping':
+        return ScalpingSettings
+    elif mode == 'swing':
+        return SwingSettings
+    else:
+        raise ValueError(f"Modo desconhecido: {mode}. Use 'scalping' ou 'swing'")

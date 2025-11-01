@@ -602,3 +602,125 @@ def safe_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
             return default
     except:
         return default
+
+
+def validate_mode_settings(mode: str, settings) -> bool:
+
+    logger = logging.getLogger('TradingBot')
+    
+    if mode == 'scalping':
+        # Validate scalping-specific settings
+        fast_timeframes = ['1m', '5m', '15m']
+        
+        if not any(tf in settings.ENTRY_TIMEFRAME for tf in fast_timeframes):
+            raise ValueError(
+                f"Scalping requires fast entry timeframe, got {settings.ENTRY_TIMEFRAME}"
+            )
+        
+        if settings.RISK_PER_TRADE > 0.02:  # More than 2%
+            logger.warning(f"⚠️ Scalping risk is high: {settings.RISK_PER_TRADE * 100}%")
+        
+        logger.info(f"✅ Scalping settings validated for {settings.ENTRY_TIMEFRAME}")
+    
+    elif mode == 'swing':
+        # Validate swing-specific settings
+        slow_timeframes = ['1h', '4h', '1d']
+        
+        if not any(tf in settings.ENTRY_TIMEFRAME for tf in slow_timeframes):
+            raise ValueError(
+                f"Swing requires slow entry timeframe, got {settings.ENTRY_TIMEFRAME}"
+            )
+        
+        if settings.RISK_PER_TRADE < 0.01:  # Less than 1%
+            logger.warning(f"⚠️ Swing risk is very low: {settings.RISK_PER_TRADE * 100}%")
+        
+        logger.info(f"✅ Swing settings validated for {settings.ENTRY_TIMEFRAME}")
+    
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+    
+    return True
+
+
+def print_mode_summary(mode: str, settings) -> None:
+
+    if mode == 'scalping':
+        emoji = "⚡"
+        description = "FAST TRADING"
+    elif mode == 'swing':
+        emoji = "📈"
+        description = "TREND TRADING"
+    else:
+        return
+    
+    print(f"\n{emoji * 40}")
+    print(f"MODE: {mode.upper()} - {description}")
+    print(f"{emoji * 40}")
+    print(f"\n📊 Configuration:")
+    print(f"   Timeframe: {settings.ENTRY_TIMEFRAME}")
+    print(f"   Strategy: {settings.STRATEGY_MODE}")
+    print(f"   Risk per Trade: {settings.RISK_PER_TRADE * 100:.2f}%")
+    print(f"   Max Open Trades: {settings.MAX_OPEN_TRADES}")
+    print(f"   Database: {settings.DATABASE_URL}")
+    print()
+
+
+def get_mode_from_strategy(strategy_name: str) -> str:
+
+    scalping_keywords = ['scalping', 'momentum', 'breakout']
+    swing_keywords = ['ensemble', 'trend', 'mean_reversion']
+    
+    name_lower = strategy_name.lower()
+    
+    if any(kw in name_lower for kw in scalping_keywords):
+        return 'scalping'
+    elif any(kw in name_lower for kw in swing_keywords):
+        return 'swing'
+    else:
+        return None
+
+
+def ensure_mode_consistency(strategy_name: str, mode: str) -> bool:
+
+    detected_mode = get_mode_from_strategy(strategy_name)
+    
+    if detected_mode and detected_mode != mode:
+        raise ValueError(
+            f"Strategy {strategy_name} appears to be for {detected_mode} mode, "
+            f"but {mode} mode was specified"
+        )
+    
+    return True
+
+
+# ============================================================================
+# EXEMPLO DE USO (adicionar ao bot_main.py ou similar)
+# ============================================================================
+
+"""
+# No seu bot_main.py ou trade_manager.py, use:
+
+from core.utils import (
+    validate_mode_settings,
+    print_mode_summary,
+    get_mode_from_strategy,
+    ensure_mode_consistency
+)
+
+# Ao inicializar
+try:
+    # Validar settings para modo
+    validate_mode_settings(mode='scalping', settings=settings)
+    
+    # Imprimir resumo
+    print_mode_summary('scalping', settings)
+    
+    # Validar consistência de estratégia
+    ensure_mode_consistency('scalping_ensemble', 'scalping')
+    
+    print("✅ All validations passed")
+    
+except ValueError as e:
+    print(f"❌ Validation error: {e}")
+    sys.exit(1)
+"""

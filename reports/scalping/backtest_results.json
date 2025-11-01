@@ -1,0 +1,11 @@
+{
+  "initial_capital": 10000.0,
+  "final_capital": 10000.0,
+  "total_signals": 645,
+  "buy_signals": 346,
+  "sell_signals": 299,
+  "strategy": "scalping_ensemble",
+  "timeframe": "5m",
+  "pairs": 4,
+  "status": "COMPLETE"
+}
