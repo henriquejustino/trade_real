@@ -2,6 +2,7 @@
 Trade Manager - Orchestrates live/testnet trading operations
 Handles order execution, position management, and reconciliation
 SINCRONIZADO COM BACKTEST - Mesmos parametros e lógica
+ATUALIZADO: Slippage, Candle Closing, Data Freshness, Capital Tracking
 """
 
 import logging
@@ -285,7 +286,7 @@ class TradeManager:
         # Database
         self.db_manager = DatabaseManager(settings.DATABASE_URL)
         
-        # 🔴 ADICIONE ISTO: Backup manager
+        # Backup manager
         self.backup_manager = BackupManager(settings)
         
         # Exchange
@@ -313,10 +314,14 @@ class TradeManager:
         self.last_signal_time: Dict[str, datetime] = {}
         self.last_backup_time: datetime = datetime.utcnow()
         
+        # ✅ SINCRONIZAÇÃO: Rastreamento de capital esperado
+        self.expected_equity: Optional[Decimal] = None
+        self.last_known_equity: Optional[Decimal] = None
+        
         # Reconcile with exchange on startup
         self._reconcile_state()
         
-        # 🔴 FAZER BACKUP INICIAL
+        # Fazer backup inicial
         self.backup_manager.backup()
         
         self.logger.info(f"✅ Trade Manager initialized in {mode} mode")
@@ -356,14 +361,11 @@ class TradeManager:
                 )
                 
                 if not has_open_orders:
-                    # No open orders - check if we should close trade
                     self.logger.warning(
                         f"Trade {trade.id} for {symbol} has no open orders. "
                         f"Checking position..."
                     )
                     
-                    # In a real implementation, check actual position
-                    # For now, just mark as closed
                     trade.status = 'CLOSED'
                     trade.exit_time = datetime.utcnow()
                     
@@ -405,6 +407,78 @@ class TradeManager:
         except Exception as e:
             self.logger.error(f"Failed to update balance: {e}")
     
+    def _get_interval_seconds(self) -> int:
+        """
+        ✅ CANDLE CLOSING: Converte interval string para segundos
+        
+        Returns:
+            Número de segundos no intervalo
+        """
+        interval = self.settings.ENTRY_TIMEFRAME
+        
+        interval_map = {
+            '1m': 60,
+            '5m': 300,
+            '15m': 900,
+            '30m': 1800,
+            '1h': 3600,
+            '4h': 14400,
+            '1d': 86400,
+        }
+        
+        return interval_map.get(interval, 3600)
+    
+    def _get_max_data_age(self) -> int:
+        """
+        ✅ DATA FRESHNESS: Calcula idade máxima aceitável dos dados em segundos
+        
+        Baseado no timeframe - máximo 1 candle + 5min de buffer
+        
+        Returns:
+            Idade máxima aceitável em segundos
+        """
+        seconds_per_interval = self._get_interval_seconds()
+        
+        # Máximo: 1 candle inteiro + 5min buffer
+        max_age_seconds = seconds_per_interval + 300
+        
+        return max_age_seconds
+    
+    def _wait_for_candle_close(self) -> None:
+        """
+        ✅ CANDLE CLOSING: Aguarda o fechamento do candle atual
+        
+        Garante que você analisa candles COMPLETOS, não em progresso
+        
+        Exemplo com timeframe 1h:
+        - Se são 13:30 (meio da hora), espera até 13:59:30
+        - Aí dorme 30 segundos
+        - Acorda em 14:00 com candle de 13:00-14:00 FECHADO
+        """
+        seconds_per_interval = self._get_interval_seconds()
+        
+        # Calcular segundos até próximo fechamento de candle
+        now = datetime.utcnow()
+        
+        # Quantos segundos já se passaram neste período?
+        seconds_into_period = (now.hour * 3600 + now.minute * 60 + now.second) % seconds_per_interval
+        
+        # Quantos segundos faltam para o próximo candle fechar?
+        seconds_until_next = seconds_per_interval - seconds_into_period
+        
+        # Esperar até 30s ANTES do fechamento
+        wait_time = seconds_until_next - 30
+        
+        # Se faltarem menos de 5 segundos, não espera (muito perto)
+        if wait_time > 5:
+            self.logger.info(
+                f"⏱️ Waiting {wait_time:.0f}s for candle to close "
+                f"({seconds_until_next:.0f}s remaining in this candle)"
+            )
+            time.sleep(wait_time)
+        else:
+            self.logger.debug(f"Candle closing soon, skipping wait")
+    
     def start(self) -> None:
         """Start the trading loop com circuit breaker check mais frequente"""
         self.running = True
@@ -424,7 +498,7 @@ class TradeManager:
             
             while self.running:
                 try:
-                    # 🔴 ADICIONE ISTO: Check circuit breaker a cada 10 segundos
+                    # Check circuit breaker a cada 10 segundos
                     now = datetime.utcnow()
                     if (now - last_cb_check).seconds > 10:
                         triggered, reason = self.risk_manager.is_circuit_breaker_triggered()
@@ -442,7 +516,7 @@ class TradeManager:
                         
                         last_cb_check = now
                     
-                    # Wait for candle
+                    # Wait for candle close
                     self._wait_for_candle_close()
                     
                     # Execute trading loop
@@ -457,93 +531,16 @@ class TradeManager:
         except KeyboardInterrupt:
             self.logger.info("Received stop signal")
         finally:
-            # 🔴 FAZER BACKUP FINAL
+            # Fazer backup final
             self.backup_manager.backup()
             self.stop()
-    
-    def _wait_for_candle_close(self) -> None:
-        """
-        Aguarda o fechamento do candle atual
-        Garante que você analisa candles COMPLETOS, não em progresso
-        
-        Exemplo com timeframe 1h:
-        - Se são 13:30 (meio da hora), espera até 13:59:30
-        - Aí dorme 30 segundos
-        - Acorda em 14:00 com candle de 13:00-14:00 FECHADO
-        """
-        interval = self.settings.ENTRY_TIMEFRAME
-        
-        # Mapeamento interval → minutos
-        interval_map = {
-            '1m': 1,
-            '5m': 5,
-            '15m': 15,
-            '30m': 30,
-            '1h': 60,
-            '4h': 240,
-            '1d': 1440,
-        }
-        
-        minutes = interval_map.get(interval, 60)
-        
-        # Calcular segundos até próximo fechamento de candle
-        now = datetime.utcnow()
-        
-        # Quantos segundos já se passaram neste período?
-        # Exemplo: em timeframe 1h, se são 13:45, se passaram 45min * 60s = 2700s
-        seconds_into_period = (now.hour * 3600 + now.minute * 60 + now.second) % (minutes * 60)
-        
-        # Quantos segundos faltam para o próximo candle fechar?
-        seconds_until_next = (minutes * 60) - seconds_into_period
-        
-        # Esperar até 30s ANTES do fechamento
-        wait_time = seconds_until_next - 30
-        
-        # Se faltarem menos de 5 segundos, não espera (muito perto)
-        if wait_time > 5:
-            self.logger.info(
-                f"⏱️ Waiting {wait_time:.0f}s for candle to close "
-                f"({seconds_until_next:.0f}s remaining in this candle)"
-            )
-            time.sleep(wait_time)
-        else:
-            self.logger.debug(f"Candle closing soon, skipping wait")
-
-    def _calculate_sleep_time(self) -> float:
-        """
-        Calcula sleep time baseado no timeframe da entrada
-        Garante que não perde candles
-        """
-        interval = self.settings.ENTRY_TIMEFRAME
-        
-        # Mapeamento interval → minutos
-        interval_map = {
-            '1m': 1,
-            '5m': 5,
-            '15m': 15,
-            '30m': 30,
-            '1h': 60,
-            '4h': 240,
-            '1d': 1440,
-        }
-        
-        minutes = interval_map.get(interval, 60)
-        
-        # Sleep = (interval - 5 segundos de buffer) convertido para segundos
-        # Exemplo: 1h = 60min → sleep 55min = 3300s
-        sleep_seconds = (minutes * 60) - 5
-        
-        # Mínimo 10s, máximo 60s para não ficar muito tempo sem checar
-        sleep_seconds = max(10, min(sleep_seconds, 60))
-        
-        return sleep_seconds
     
     def _trading_loop(self) -> None:
         """Main trading loop com backup periódico"""
         try:
             session = self.db_manager.get_session()
             
-            # 🔴 ADICIONE ISTO: Fazer backup a cada 1 hora
+            # ✅ BACKUP PERIÓDICO: a cada 1 hora
             now = datetime.utcnow()
             time_since_backup = (now - self.last_backup_time).total_seconds()
             
@@ -552,13 +549,14 @@ class TradeManager:
                 self.backup_manager.backup()
                 self.last_backup_time = now
             
-            # Wait for candle
-            self._wait_for_candle_close()
-            
-            # Update equity tracking
+            # ✅ CAPITAL TRACKING: Atualizar equity
             try:
                 total_equity = self.exchange.get_total_balance_usdt()
                 self.logger.debug(f"Current equity: ${total_equity:.2f}")
+                
+                # ✅ SINCRONIZAÇÃO: Rastrear equity esperado
+                self._track_equity_drift(total_equity)
+                
             except Exception as e:
                 self.logger.error(f"Failed to get equity: {e}")
                 session.close()
@@ -576,7 +574,6 @@ class TradeManager:
                     reason,
                     "ERROR"
                 )
-                # 🔴 FAZER BACKUP ANTES DE PARAR!
                 self.backup_manager.backup()
                 self.stop()
                 session.close()
@@ -599,6 +596,42 @@ class TradeManager:
             
         except Exception as e:
             self.logger.error(f"Trading loop fatal error: {e}", exc_info=True)
+    
+    def _track_equity_drift(self, current_equity: Decimal) -> None:
+        """
+        ✅ CAPITAL TRACKING: Rastreia divergência de capital esperado vs atual
+        
+        Args:
+            current_equity: Equity atual do exchange
+        """
+        # Inicializar equity esperado na primeira vez
+        if self.expected_equity is None:
+            self.expected_equity = current_equity
+            self.last_known_equity = current_equity
+            self.logger.info(f"💰 Initial equity set: ${current_equity:.2f}")
+            return
+        
+        # Calcular diferença
+        equity_diff = current_equity - self.last_known_equity
+        equity_diff_pct = (equity_diff / self.last_known_equity * 100) if self.last_known_equity > 0 else 0
+        
+        # Log se houver diferença significativa (> 1%)
+        if abs(equity_diff_pct) > 1.0:
+            self.logger.warning(
+                f"⚠️ Equity change detected: ${current_equity:.2f} "
+                f"(was ${self.last_known_equity:.2f}) "
+                f"Change: {equity_diff_pct:+.2f}%"
+            )
+            
+            # Se diferença muito grande, possível problema
+            if abs(equity_diff_pct) > 5.0:
+                self.logger.error(
+                    f"🚨 Large equity drift: {equity_diff_pct:+.2f}% "
+                    f"Possible issue: deposit/withdrawal or data sync problem"
+                )
+        
+        # Atualizar último conhecimento
+        self.last_known_equity = current_equity
     
     def _update_open_trades(self, session: Session) -> None:
         """Update status of open trades - IGUAL AO BACKTEST"""
@@ -665,9 +698,11 @@ class TradeManager:
         exit_time: datetime,
         reason: str
     ) -> None:
-        """Close trade - IGUAL AO BACKTEST"""
+        """
+        ✅ SLIPPAGE CONSISTENTE: Close trade com slippage (IGUAL AO BACKTEST)
+        """
         
-        # Apply slippage
+        # ✅ SINCRONIZAÇÃO: Aplicar slippage IGUAL ao backtest
         slippage = exit_price * self.settings.SLIPPAGE_PERCENT
         if trade.side == 'BUY':
             exit_price -= slippage
@@ -745,7 +780,10 @@ class TradeManager:
             session.rollback()
     
     def _scan_opportunities(self, session: Session) -> None:
-        """Scan for new trading opportunities com validação robusta"""
+        """
+        ✅ SINCRONIZAÇÃO: Scan for new trading opportunities
+        Com threshold 0.40 (igual backtest) e data freshness check
+        """
         
         can_trade, reason = self.risk_manager.can_open_trade(len(self.open_trades))
         
@@ -759,16 +797,14 @@ class TradeManager:
                     self.logger.debug(f"Skipping {symbol}: already have open trade")
                     continue
                 
-                # Avoid excessive signal frequency (2 min cooldown)
-                last_signal = self.last_signal_time.get(symbol)
-                if last_signal and (datetime.utcnow() - last_signal).seconds < 120:
-                    self.logger.debug(f"Skipping {symbol}: in cooldown period")
-                    continue
+                # ✅ SINCRONIZAÇÃO: Sem cooldown (diferente do original)
+                # Backtest não usa cooldown, então testnet também não
+                # (remover o check de cooldown anterior)
                 
                 try:
                     self.logger.debug(f"Fetching data for {symbol}...")
                     
-                    # 🔴 SEM end_time (testnet não suporta)
+                    # Buscar dados com limit (SEM end_time para testnet)
                     primary_df = self.exchange.get_klines(
                         symbol,
                         self.settings.PRIMARY_TIMEFRAME,
@@ -788,7 +824,7 @@ class TradeManager:
                     self.logger.error(f"Unexpected error fetching data for {symbol}: {e}", exc_info=True)
                     continue
                 
-                # 🔴 VALIDAÇÃO: DataFrames não vazios
+                # ✅ VALIDAÇÃO: DataFrames não vazios
                 if primary_df.empty or entry_df.empty:
                     self.logger.warning(
                         f"❌ Empty DataFrame for {symbol}: "
@@ -796,17 +832,19 @@ class TradeManager:
                     )
                     continue
                 
-                # 🔴 VALIDAÇÃO: Timestamps recentes (relaxado para testnet)
+                # ✅ DATA FRESHNESS: Validação robusta
                 latest_entry_time = entry_df.index[-1]
                 age_seconds = (datetime.utcnow() - latest_entry_time.replace(tzinfo=None)).total_seconds()
                 
-                # Aceita dados até 1h atrasados (testnet é assim)
-                max_age = 3600
+                # Máximo definido por timeframe (1 candle + 5min)
+                max_age = self._get_max_data_age()
                 
                 if age_seconds > max_age:
                     self.logger.warning(
-                        f"⚠️ Stale data for {symbol}: latest candle is {age_seconds:.0f}s old"
+                        f"⚠️ Stale data for {symbol}: latest candle is {age_seconds:.0f}s old "
+                        f"(max: {max_age}s). Skipping this symbol."
                     )
+                    continue  # ✅ REJEIT A, não continua!
                 
                 # Multi-timeframe signal analysis
                 signal, strength, metadata = self.mtf_analyzer.analyze(
@@ -814,7 +852,7 @@ class TradeManager:
                     entry_df
                 )
                 
-                # 🔴 LOG DETALHADO de todo sinal (mesmo HOLD)
+                # ✅ LOG DETALHADO de todo sinal (mesmo HOLD)
                 self.logger.info(
                     f"📊 {symbol}: Signal={signal:5s} | Strength={strength:.2f} | "
                     f"Primary={metadata.get('primary_signal', 'N/A'):5s} | "
@@ -822,52 +860,25 @@ class TradeManager:
                     f"Age={age_seconds:.0f}s"
                 )
                 
-                # 🔴 THRESHOLD: Aceita sinais acima de 0.35 (reduzido para testnet)
-                if signal in ['BUY', 'SELL'] and strength > 0.35:
+                # ✅ SINCRONIZAÇÃO: MESMO threshold que backtest (0.40)
+                if signal in ['BUY', 'SELL'] and strength > 0.40:
                     self.logger.info(
                         f"✅ TRADE SIGNAL for {symbol}: {signal} (strength={strength:.2f})"
                     )
                     self._execute_trade(
                         session, symbol, signal, strength, entry_df
                     )
-                    self.last_signal_time[symbol] = datetime.utcnow()
                 else:
                     # Log quando sinal é rejeitado
                     if signal in ['BUY', 'SELL']:
                         self.logger.debug(
                             f"⚠️ Signal {signal} for {symbol} rejected: "
-                            f"strength {strength:.2f} below threshold 0.48"
+                            f"strength {strength:.2f} below threshold 0.40"
                         )
             
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
 
-    def _get_max_data_age(self) -> int:
-        """
-        Calcula idade máxima aceitável dos dados em segundos
-        baseado no timeframe
-        """
-        interval = self.settings.ENTRY_TIMEFRAME
-        
-        # Mapeamento interval → minutos
-        interval_map = {
-            '1m': 1,
-            '5m': 5,
-            '15m': 15,
-            '30m': 30,
-            '1h': 60,
-            '4h': 240,
-            '1d': 1440,
-        }
-        
-        minutes = interval_map.get(interval, 60)
-        
-        # Dados podem estar atrasados por até 1 candle inteiro + 5min buffer
-        # Exemplo: timeframe 1h → max age = 60min + 5min = 3900s
-        max_age_seconds = (minutes * 60) + 300  # +5min buffer
-        
-        return max_age_seconds
-    
     def _execute_trade(
         self,
         session: Session,
@@ -876,10 +887,25 @@ class TradeManager:
         strength: float,
         df: pd.DataFrame
     ) -> None:
-        """Execute a new trade - IGUAL AO BACKTEST"""
+        """
+        ✅ ORDER EXECUTION LATENCY: Execute a new trade com validação de latência
+        """
         try:
-            # Get current price and filters
+            # ✅ LATENCY COMPENSATION: Validar que preço é "próximo" do sinal
+            signal_price = Decimal(str(df['close'].iloc[-1]))  # Preço do candle que gerou sinal
             current_price = self.exchange.get_ticker_price(symbol)
+            
+            # Verificar latência de execução
+            price_diff_pct = abs(current_price - signal_price) / signal_price
+            
+            if price_diff_pct > Decimal('0.005'):  # Mais de 0.5% diferença
+                self.logger.warning(
+                    f"⚠️ {symbol}: Price moved {float(price_diff_pct)*100:.2f}% "
+                    f"since signal (Signal: ${signal_price}, Current: ${current_price})"
+                )
+                # Ainda executa, mas com log para análise
+            
+            # Get filters
             filters = self.exchange.get_symbol_filters(symbol)
             
             # Get total capital
@@ -902,7 +928,7 @@ class TradeManager:
                 side=side
             )
             
-            # Calculate position size - IGUAL AO BACKTEST
+            # Calculate position size - IGUAL AO BACKTEST COM SIGNAL STRENGTH
             quantity = self.risk_manager.calculate_dynamic_position_size(
                 capital=total_capital,
                 entry_price=current_price,

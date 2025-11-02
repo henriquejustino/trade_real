@@ -1,6 +1,7 @@
 """
 Backtesting engine for strategy simulation
 Candle-by-candle execution with realistic fees and slippage
+ATUALIZADO: Sincronização com testnet/live
 """
 
 import logging
@@ -221,6 +222,10 @@ class BacktestEngine:
         self.open_trades: Dict[str, BacktestTrade] = {}
         self.daily_returns: List[float] = []
         
+        # ✅ SINCRONIZAÇÃO: Rastrear sinais para compatibilidade com testnet
+        self.last_signal_time: Dict[str, datetime] = {}
+        self.signal_cooldown_seconds = 0  # Backtest NÃO usa cooldown
+        
         self.logger.info("Backtest engine initialized")
     
     def load_data(
@@ -383,22 +388,27 @@ class BacktestEngine:
                     current_time
                 )
             
-            # Check for new signals
+            # ✅ SINCRONIZAÇÃO: Check for new signals SEM COOLDOWN
+            # Backtest não tem latência, então pode processar todo candle
             if symbol not in self.open_trades:
                 signal, strength, metadata = self.mtf_analyzer.analyze(
                     primary_history.tail(500),
                     entry_history.tail(500)
                 )
                 
-                if signal in ['BUY', 'SELL'] and strength > 0.49:  # Reduzido de 0.5 para 0.4 (20% mais permissivo)
+                # ✅ SINCRONIZAÇÃO: Mesmo threshold que testnet/live (0.40)
+                if signal in ['BUY', 'SELL'] and strength > 0.40:
                     self._open_trade(
                         symbol,
                         signal,
                         current_candle['close'],
                         current_time,
                         entry_history.tail(100),
-                        strength=strength  # 🆕 PASSA A FORÇA!
+                        strength=strength
                     )
+                    
+                    # Log para debug (sem cooldown)
+                    self.last_signal_time[symbol] = current_time
             
             # Track equity
             current_equity = self._calculate_current_equity(
@@ -413,7 +423,7 @@ class BacktestEngine:
         price: Decimal,
         time: datetime,
         df: pd.DataFrame,
-        strength: float = 0.5  # 🆕 ADICIONE ESTE PARÂMETRO
+        strength: float = 0.5
 
     ) -> None:
         """Open a new trade in backtest"""
@@ -450,11 +460,11 @@ class BacktestEngine:
         }
         
         quantity = self.risk_manager.calculate_dynamic_position_size(
-        capital=self.capital,
-        entry_price=Decimal(str(price)),
-        stop_loss_price=stop_loss,
-        symbol_filters=filters,
-        signal_strength=strength  # 🆕 USA A FORÇA DO SINAL!
+            capital=self.capital,
+            entry_price=Decimal(str(price)),
+            stop_loss_price=stop_loss,
+            symbol_filters=filters,
+            signal_strength=strength
         )
         
         if not quantity:
@@ -490,7 +500,7 @@ class BacktestEngine:
         
         trade = self.open_trades[symbol]
         
-        # Check PARTIAL TAKE PROFITS first! 🆕
+        # Check PARTIAL TAKE PROFITS first!
         tp_hit = trade.check_partial_tp(
             Decimal(str(close)),
             time,
@@ -548,7 +558,7 @@ class BacktestEngine:
         
         trade = self.open_trades.pop(symbol)
         
-        # Apply slippage
+        # ✅ SINCRONIZAÇÃO: Aplicar slippage IGUAL ao testnet/live
         slippage = exit_price * self.settings.SLIPPAGE_PERCENT
         if trade.side == 'BUY':
             exit_price -= slippage
@@ -764,28 +774,28 @@ class BacktestEngine:
         self.logger.info(f"  JSON report saved: {report_path}")
     
     def _save_trades_csv(self) -> None:
-        """Save trade history to CSV"""
-        
-        trades_data = []
-        
-        for trade in self.trades:
-            trades_data.append({
-                'symbol': trade.symbol,
-                'side': trade.side,
-                'entry_price': float(trade.entry_price),
-                'exit_price': float(trade.exit_price) if trade.exit_price else None,
-                'quantity': float(trade.quantity),
-                'entry_time': trade.entry_time,
-                'exit_time': trade.exit_time,
-                'pnl': float(trade.pnl),
-                'pnl_percent': trade.pnl_percent,
-                'fees': float(trade.fees),
-                'exit_reason': trade.exit_reason,
-            })
-        
-        df = pd.DataFrame(trades_data)
-        
-        csv_path = self.settings.REPORTS_DIR / 'backtest_trades.csv'
-        df.to_csv(csv_path, index=False)
-        
-        self.logger.info(f"  Trades CSV saved: {csv_path}")
+            """Save trade history to CSV"""
+            
+            trades_data = []
+            
+            for trade in self.trades:
+                trades_data.append({
+                    'symbol': trade.symbol,
+                    'side': trade.side,
+                    'entry_price': float(trade.entry_price),
+                    'exit_price': float(trade.exit_price) if trade.exit_price else None,
+                    'quantity': float(trade.initial_quantity),
+                    'entry_time': trade.entry_time,
+                    'exit_time': trade.exit_time,
+                    'pnl': float(trade.pnl),
+                    'pnl_percent': trade.pnl_percent,
+                    'fees': float(trade.fees),
+                    'exit_reason': trade.exit_reason,
+                })
+            
+            df = pd.DataFrame(trades_data)
+            
+            csv_path = self.settings.REPORTS_DIR / 'backtest_trades.csv'
+            df.to_csv(csv_path, index=False)
+            
+            self.logger.info(f"  Trades CSV saved: {csv_path}")
