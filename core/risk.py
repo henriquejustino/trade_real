@@ -1,8 +1,3 @@
-"""
-Risk management module
-Position sizing, stop loss, take profit, and risk control
-"""
-
 import logging
 from typing import Optional, Tuple
 from decimal import Decimal
@@ -16,12 +11,7 @@ class RiskManager:
     """Risk management system for position sizing and control"""
     
     def __init__(self, settings):
-        """
-        Initialize risk manager
-        
-        Args:
-            settings: Settings object with risk parameters
-        """
+
         self.settings = settings
         self.logger = logging.getLogger('TradingBot.RiskManager')
         
@@ -37,8 +27,33 @@ class RiskManager:
         self.peak_equity = Decimal('0')
         self.current_drawdown = Decimal('0')
         
+        self.last_reset_date = datetime.utcnow().date()
+        
         self.logger.info("Risk Manager initialized")
     
+    def check_and_reset_daily_tracking(self, current_time: datetime) -> bool:
+
+        current_date = current_time.date()
+        
+        if current_date != self.last_reset_date:
+            self.logger.info(
+                f"🔄 Resetting daily tracking (new day: {current_date})"
+            )
+            
+            # Resetar contadores diários
+            self.daily_pnl = Decimal('0')
+            self.last_reset_date = datetime.utcnow().date()
+            self.daily_start_equity = None
+            self.peak_equity = Decimal('0')
+            self.current_drawdown = Decimal('0')
+            
+            # Atualizar data de reset
+            self.last_reset_date = current_date
+            
+            return True
+        
+        return False
+
     def calculate_position_size(
         self,
         capital: Decimal,
@@ -46,18 +61,7 @@ class RiskManager:
         stop_loss_price: Decimal,
         symbol_filters: dict
     ) -> Optional[Decimal]:
-        """
-        Calculate position size based on risk parameters
-        
-        Args:
-            capital: Available capital
-            entry_price: Entry price
-            stop_loss_price: Stop loss price
-            symbol_filters: Symbol filters from exchange
-            
-        Returns:
-            Position size (quantity) or None if too small
-        """
+
         # Calculate stop loss distance
         stop_loss_distance = abs(entry_price - stop_loss_price) / entry_price
         
@@ -264,12 +268,7 @@ class RiskManager:
             )
     
     def update_daily_pnl(self, pnl: Decimal) -> None:
-        """
-        Update daily PnL tracking
-        
-        Args:
-            pnl: PnL to add to daily total
-        """
+
         self.daily_pnl += pnl
         
         self.logger.info(f"Daily PnL updated: ${self.daily_pnl}")
@@ -277,17 +276,13 @@ class RiskManager:
     def reset_daily_tracking(self) -> None:
         """Reset daily tracking (call at start of new day)"""
         self.daily_pnl = Decimal('0')
+        self.last_reset_date = datetime.utcnow().date()
         self.daily_start_equity = None
         
         self.logger.info("Daily tracking reset")
     
     def is_circuit_breaker_triggered(self) -> Tuple[bool, str]:
-        """
-        Check if circuit breaker should halt trading
-        
-        Returns:
-            Tuple of (is_triggered, reason)
-        """
+
         # Check drawdown
         if self.current_drawdown > self.max_drawdown:
             return True, f"Drawdown {self.current_drawdown:.2%} exceeds limit"
@@ -309,19 +304,7 @@ class RiskManager:
         quantity: Decimal,
         side: str
     ) -> dict:
-        """
-        Calculate risk metrics for a trade
-        
-        Args:
-            entry_price: Entry price
-            stop_loss: Stop loss price
-            take_profit: Take profit price
-            quantity: Position quantity
-            side: BUY or SELL
-            
-        Returns:
-            Dictionary with risk metrics
-        """
+
         # Calculate potential loss
         if side == 'BUY':
             potential_loss = (entry_price - stop_loss) * quantity
@@ -349,16 +332,7 @@ class RiskManager:
         risk_metrics: dict,
         min_risk_reward: Decimal = Decimal('1.5')
     ) -> Tuple[bool, str]:
-        """
-        Validate if trade meets risk criteria
-        
-        Args:
-            risk_metrics: Risk metrics from calculate_risk_metrics
-            min_risk_reward: Minimum acceptable risk-reward ratio
-            
-        Returns:
-            Tuple of (is_valid, reason)
-        """
+
         rr_ratio = risk_metrics['risk_reward_ratio']
         
         if rr_ratio < min_risk_reward:
@@ -374,19 +348,7 @@ class RiskManager:
         symbol_filters: dict,
         signal_strength: float  # NOVO PARÂMETRO!
     ) -> Optional[Decimal]:
-        """
-        Calculate position size dynamically based on signal strength
-        
-        Args:
-            capital: Available capital
-            entry_price: Entry price
-            stop_loss_price: Stop loss price
-            symbol_filters: Symbol filters from exchange
-            signal_strength: Signal strength (0.0 to 1.0)
-            
-        Returns:
-            Position size (quantity) or None if too small
-        """
+
         # DYNAMIC RISK based on signal strength
         if signal_strength >= 0.8:
             # Very strong signal - risk 3%

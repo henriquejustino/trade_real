@@ -1,9 +1,3 @@
-"""
-Backtesting engine for strategy simulation
-Candle-by-candle execution with realistic fees and slippage
-ATUALIZADO: Sincronização com testnet/live
-"""
-
 import logging
 from typing import List, Dict, Optional, Tuple
 from decimal import Decimal
@@ -558,7 +552,7 @@ class BacktestEngine:
         
         trade = self.open_trades.pop(symbol)
         
-        # ✅ SINCRONIZAÇÃO: Aplicar slippage IGUAL ao testnet/live
+        # ✅ SINCRONIZAÇÃO: Aplicar slippage IGUAL ao testnet
         slippage = exit_price * self.settings.SLIPPAGE_PERCENT
         if trade.side == 'BUY':
             exit_price -= slippage

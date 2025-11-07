@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     BACKTEST_END_DATE: str = hoje.strftime("%Y-%m-%d")
 
     BACKTEST_INITIAL_CAPITAL: Decimal = Decimal("10000.0")
+    SLIPPAGE_PERCENT: Decimal = Decimal("0.001")
     
     # Data Sources
     DATA_DIR: Path = Path("data")

@@ -1,10 +1,3 @@
-"""
-Trade Manager - Orchestrates live/testnet trading operations
-Handles order execution, position management, and reconciliation
-SINCRONIZADO COM BACKTEST - Mesmos parametros e lógica
-ATUALIZADO: Slippage, Candle Closing, Data Freshness, Capital Tracking
-"""
-
 import logging
 import time
 import shutil
@@ -15,6 +8,7 @@ from datetime import datetime, timedelta
 import threading
 import pandas as pd
 from sqlalchemy.orm import Session
+from binance.exceptions import BinanceAPIException
 
 from core.exchange import BinanceExchange
 from core.risk import RiskManager
@@ -312,7 +306,8 @@ class TradeManager:
         self.running = False
         self.open_trades: Dict[str, TestnetTrade] = {}
         self.last_signal_time: Dict[str, datetime] = {}
-        self.last_backup_time: datetime = datetime.utcnow()
+        self.last_backup_time = datetime.utcnow()
+        self.last_recon_time = datetime.utcnow()
         
         # ✅ SINCRONIZAÇÃO: Rastreamento de capital esperado
         self.expected_equity: Optional[Decimal] = None
@@ -429,32 +424,20 @@ class TradeManager:
         return interval_map.get(interval, 3600)
     
     def _get_max_data_age(self) -> int:
-        """
-        ✅ DATA FRESHNESS: Calcula idade máxima aceitável dos dados em segundos
-        
-        Baseado no timeframe - máximo 1 candle + 5min de buffer
-        
-        Returns:
-            Idade máxima aceitável em segundos
-        """
+
         seconds_per_interval = self._get_interval_seconds()
         
-        # Máximo: 1 candle inteiro + 5min buffer
-        max_age_seconds = seconds_per_interval + 300
+        if self.mode == 'testnet':
+            # Testnet mais permissivo
+            max_age_seconds = seconds_per_interval + 600  # +10min
+        else:
+            # Live mais rigoroso
+            max_age_seconds = seconds_per_interval + 300  # +5min
         
         return max_age_seconds
     
     def _wait_for_candle_close(self) -> None:
-        """
-        ✅ CANDLE CLOSING: Aguarda o fechamento do candle atual
-        
-        Garante que você analisa candles COMPLETOS, não em progresso
-        
-        Exemplo com timeframe 1h:
-        - Se são 13:30 (meio da hora), espera até 13:59:30
-        - Aí dorme 30 segundos
-        - Acorda em 14:00 com candle de 13:00-14:00 FECHADO
-        """
+
         seconds_per_interval = self._get_interval_seconds()
         
         # Calcular segundos até próximo fechamento de candle
@@ -536,27 +519,42 @@ class TradeManager:
             self.stop()
     
     def _trading_loop(self) -> None:
-        """Main trading loop com backup periódico"""
         try:
             session = self.db_manager.get_session()
             
-            # ✅ BACKUP PERIÓDICO: a cada 1 hora
             now = datetime.utcnow()
-            time_since_backup = (now - self.last_backup_time).total_seconds()
             
-            if time_since_backup > 3600:  # 1 hora = 3600 segundos
-                self.logger.info("⏰ Horário de backup periódico...")
+            # ✅ NOVO: Reset diário
+            was_reset = self.risk_manager.check_and_reset_daily_tracking(now)
+            if was_reset:
+                self.logger.info("📊 Daily tracking reset for new day")
+            
+            # ✅ NOVO: Backup periódico
+            time_since_backup = (now - self.last_backup_time).total_seconds()
+            if time_since_backup > 3600:
+                self.logger.info("⏰ Performing periodic backup...")
                 self.backup_manager.backup()
                 self.last_backup_time = now
             
-            # ✅ CAPITAL TRACKING: Atualizar equity
+            # ✅ NOVO: Reconciliação periódica
+            time_since_recon = (now - self.last_recon_time).total_seconds()
+            if time_since_recon > 3600:
+                self.logger.info("🔄 Periodic reconciliation with exchange...")
+                self._reconcile_state()
+                self.last_recon_time = now
+            
+            # # ✅ NOVO: Time sync periódica
+            # time_since_sync = (now - self.last_time_sync).total_seconds()
+            # if time_since_sync > 3600:
+            #     self.logger.info("🕐 Syncing time with server...")
+            #     self._sync_time_with_server()
+            #     self.last_time_sync = now
+            
+            # ✅ Atualizar equity
             try:
                 total_equity = self.exchange.get_total_balance_usdt()
                 self.logger.debug(f"Current equity: ${total_equity:.2f}")
-                
-                # ✅ SINCRONIZAÇÃO: Rastrear equity esperado
                 self._track_equity_drift(total_equity)
-                
             except Exception as e:
                 self.logger.error(f"Failed to get equity: {e}")
                 session.close()
@@ -564,28 +562,23 @@ class TradeManager:
             
             self.risk_manager.update_equity_tracking(total_equity)
             
-            # Check circuit breaker
+            # ✅ Check circuit breaker
             triggered, reason = self.risk_manager.is_circuit_breaker_triggered()
             if triggered:
                 self.logger.error(f"🚨 CIRCUIT BREAKER TRIGGERED: {reason}")
-                notify(
-                    self.settings,
-                    "🚨 Circuit Breaker Triggered",
-                    reason,
-                    "ERROR"
-                )
+                notify(self.settings, "🚨 Circuit Breaker", reason, "ERROR")
                 self.backup_manager.backup()
                 self.stop()
                 session.close()
                 return
             
-            # Update open trades
+            # ✅ Update open trades
             try:
                 self._update_open_trades(session)
             except Exception as e:
                 self.logger.error(f"Error updating trades: {e}", exc_info=True)
             
-            # Check for new opportunities
+            # ✅ Scan for new opportunities
             try:
                 self._scan_opportunities(session)
             except Exception as e:
@@ -598,13 +591,6 @@ class TradeManager:
             self.logger.error(f"Trading loop fatal error: {e}", exc_info=True)
     
     def _track_equity_drift(self, current_equity: Decimal) -> None:
-        """
-        ✅ CAPITAL TRACKING: Rastreia divergência de capital esperado vs atual
-        
-        Args:
-            current_equity: Equity atual do exchange
-        """
-        # Inicializar equity esperado na primeira vez
         if self.expected_equity is None:
             self.expected_equity = current_equity
             self.last_known_equity = current_equity
@@ -634,14 +620,14 @@ class TradeManager:
         self.last_known_equity = current_equity
     
     def _update_open_trades(self, session: Session) -> None:
-        """Update status of open trades - IGUAL AO BACKTEST"""
+        """Atualizar trades abertos E executar partial TPs"""
+        
         for symbol, trade in list(self.open_trades.items()):
             try:
-                # Get current price
                 current_price = self.exchange.get_ticker_price(symbol)
                 current_time = datetime.utcnow()
                 
-                # CHECK PARTIAL TAKE PROFITS FIRST! (IGUAL BACKTEST)
+                # ✅ VERIFICAR E EXECUTAR PARTIAL TPs
                 tp_hit = trade.check_partial_tp(
                     Decimal(str(current_price)),
                     current_time,
@@ -650,42 +636,130 @@ class TradeManager:
                 
                 if tp_hit:
                     self.logger.info(
-                        f"  💰 {tp_hit} acerto para {symbol}: Posição parcial fechada"
+                        f"💰 {tp_hit} atingido para {symbol}: "
+                        f"Posição parcial será fechada"
                     )
                     
-                    # If fully closed via TP3, remove from open trades
+                    # ✅ DETERMINAR QUANTIDADE A FECHAR
+                    if tp_hit == 'TP1':
+                        qty_to_sell = trade.initial_quantity * Decimal('0.3')
+                    elif tp_hit == 'TP2':
+                        qty_to_sell = trade.initial_quantity * Decimal('0.4')
+                    else:  # TP3
+                        qty_to_sell = trade.quantity
+                    
+                    # ✅ EXECUTAR ORDEM REAL
+                    try:
+                        exit_side = 'SELL' if trade.side == 'BUY' else 'BUY'
+                        
+                        self.logger.info(
+                            f"📤 Closing partial: {qty_to_sell} {symbol} @ market"
+                        )
+                        
+                        partial_order = self.exchange.create_order(
+                            symbol=symbol,
+                            side=exit_side,
+                            order_type='MARKET',
+                            quantity=qty_to_sell,
+                            test=False
+                        )
+                        
+                        actual_exit_price = Decimal(str(
+                            partial_order.get('avgPrice', current_price)
+                        ))
+                        partial_order_id = partial_order.get('orderId')
+                        
+                        self.logger.info(
+                            f"✅ Partial exit executed: "
+                            f"ID={partial_order_id} | "
+                            f"Qty={qty_to_sell} | "
+                            f"Price=${actual_exit_price}"
+                        )
+                        
+                        # ✅ SALVAR ORDEM DE SAÍDA PARCIAL NO DB
+                        db_trade = session.query(Trade).filter(
+                            Trade.exchange_order_id != None,
+                            Trade.symbol == symbol,
+                            Trade.status == 'OPEN'
+                        ).first()
+                        
+                        if db_trade:
+                            exit_order = Order(
+                                trade_id=db_trade.id,
+                                symbol=symbol,
+                                side=exit_side,
+                                order_type='MARKET',
+                                quantity=qty_to_sell,
+                                executed_quantity=qty_to_sell,
+                                avg_price=actual_exit_price,
+                                status='FILLED',
+                                exchange_order_id=str(partial_order_id),
+                                mode=self.mode
+                            )
+                            session.add(exit_order)
+                        
+                    except BinanceAPIException as e:
+                        self.logger.error(
+                            f"❌ Failed to execute partial exit: {e.message}"
+                        )
+                        continue
+                    
+                    # ✅ SE TOTALMENTE FECHADO VIA TP3
                     if trade.status == 'CLOSED':
                         self.open_trades.pop(symbol)
-                        self.logger.info(
-                            f"  ✅ Totalmente fechado via TPs parciais | "
-                            f"Total PnL: ${trade.pnl:.2f} ({trade.pnl_percent:+.2f}%)"
-                        )
-                        # Salvar no banco de dados
                         self._save_closed_trade_to_db(session, symbol, trade)
+                        
+                        self.logger.info(
+                            f"✅ Trade completamente fechado via TPs parciais: "
+                            f"PnL Total=${trade.pnl:.2f} ({trade.pnl_percent:+.2f}%)"
+                        )
+                        
+                        notify(
+                            self.settings,
+                            f"✅ Trade Closed - {symbol}",
+                            f"Method: Partial Take Profits\n"
+                            f"Total PnL: ${trade.pnl:.2f}\n"
+                            f"Return: {trade.pnl_percent:+.2f}%",
+                            "INFO"
+                        )
+                    
+                    session.commit()
                     continue
                 
-                # Check stop loss (para quantidade restante)
+                # ✅ CHECK STOP LOSS (para quantidade restante)
                 if trade.side == 'BUY' and current_price <= float(trade.stop_loss):
                     exit_price = trade.stop_loss
-                    self._close_trade(session, symbol, trade, exit_price, current_time, 'STOP_LOSS')
+                    self._close_trade(
+                        session, symbol, trade, exit_price,
+                        current_time, 'STOP_LOSS'
+                    )
                     continue
                 
                 if trade.side == 'SELL' and current_price >= float(trade.stop_loss):
                     exit_price = trade.stop_loss
-                    self._close_trade(session, symbol, trade, exit_price, current_time, 'STOP_LOSS')
+                    self._close_trade(
+                        session, symbol, trade, exit_price,
+                        current_time, 'STOP_LOSS'
+                    )
                     continue
                 
-                # Check take profit
+                # ✅ CHECK TAKE PROFIT
                 if trade.side == 'BUY' and current_price >= float(trade.take_profit):
                     exit_price = trade.take_profit
-                    self._close_trade(session, symbol, trade, exit_price, current_time, 'TAKE_PROFIT')
+                    self._close_trade(
+                        session, symbol, trade, exit_price,
+                        current_time, 'TAKE_PROFIT'
+                    )
                     continue
                 
                 if trade.side == 'SELL' and current_price <= float(trade.take_profit):
                     exit_price = trade.take_profit
-                    self._close_trade(session, symbol, trade, exit_price, current_time, 'TAKE_PROFIT')
+                    self._close_trade(
+                        session, symbol, trade, exit_price,
+                        current_time, 'TAKE_PROFIT'
+                    )
                     continue
-                
+            
             except Exception as e:
                 self.logger.error(f"Error updating trade {symbol}: {e}", exc_info=True)
     
@@ -699,38 +773,62 @@ class TradeManager:
         reason: str
     ) -> None:
         """
-        ✅ SLIPPAGE CONSISTENTE: Close trade com slippage (IGUAL AO BACKTEST)
+        ✅ SLIPPAGE CONSISTENTE: Fechar trade com slippage (IGUAL AO BACKTEST)
         """
         
         # ✅ SINCRONIZAÇÃO: Aplicar slippage IGUAL ao backtest
         slippage = exit_price * self.settings.SLIPPAGE_PERCENT
-        if trade.side == 'BUY':
-            exit_price -= slippage
-        else:
-            exit_price += slippage
         
-        # Close trade
+        if trade.side == 'BUY':
+            # Para compra longa, slippage reduz preço de saída
+            slipped_exit_price = exit_price - slippage
+            self.logger.debug(
+                f"Slippage (BUY): ${exit_price:.2f} → ${slipped_exit_price:.2f} "
+                f"(-${slippage:.4f})"
+            )
+        else:
+            # Para venda curta, slippage aumenta preço de saída (piora)
+            slipped_exit_price = exit_price + slippage
+            self.logger.debug(
+                f"Slippage (SELL): ${exit_price:.2f} → ${slipped_exit_price:.2f} "
+                f"(+${slippage:.4f})"
+            )
+        
+        # Usar preço com slippage para PnL
         trade.close(
-            exit_price=exit_price,
+            exit_price=slipped_exit_price,
             exit_time=exit_time,
             reason=reason,
             fee_rate=self.settings.TAKER_FEE
         )
         
-        # Update risk manager
+        # Atualizar risk manager
         self.risk_manager.update_daily_pnl(trade.pnl)
-        self.risk_manager.update_equity_tracking(self.exchange.get_total_balance_usdt())
+        current_equity = self.exchange.get_total_balance_usdt()
+        self.risk_manager.update_equity_tracking(current_equity)
         
-        # Remove from open trades
+        # Remover de open trades
         self.open_trades.pop(symbol, None)
         
-        # Save to database
+        # Salvar no DB
         self._save_closed_trade_to_db(session, symbol, trade)
         
         pnl_emoji = "✅" if trade.pnl > 0 else "❌"
         self.logger.info(
-            f"  {pnl_emoji} Closed {trade.side} trade: {reason} | "
+            f"{pnl_emoji} Trade fechado: {trade.side} {symbol} | "
+            f"Motivo: {reason} | "
             f"PnL: ${trade.pnl:.2f} ({trade.pnl_percent:+.2f}%)"
+        )
+        
+        notify(
+            self.settings,
+            f"{pnl_emoji} Trade Closed - {symbol}",
+            f"Side: {trade.side}\n"
+            f"Entry: ${trade.entry_price}\n"
+            f"Exit: ${slipped_exit_price} (com slippage)\n"
+            f"Reason: {reason}\n"
+            f"PnL: ${trade.pnl:.2f} ({trade.pnl_percent:+.2f}%)",
+            "INFO"
         )
     
     def _save_closed_trade_to_db(self, session: Session, symbol: str, trade: TestnetTrade) -> None:
@@ -780,11 +878,7 @@ class TradeManager:
             session.rollback()
     
     def _scan_opportunities(self, session: Session) -> None:
-        """
-        ✅ SINCRONIZAÇÃO: Scan for new trading opportunities
-        Com threshold 0.40 (igual backtest) e data freshness check
-        """
-        
+
         can_trade, reason = self.risk_manager.can_open_trade(len(self.open_trades))
         
         if not can_trade:
@@ -796,11 +890,6 @@ class TradeManager:
                 if symbol in self.open_trades:
                     self.logger.debug(f"Skipping {symbol}: already have open trade")
                     continue
-                
-                # ✅ SINCRONIZAÇÃO: Sem cooldown (diferente do original)
-                # Backtest não usa cooldown, então testnet também não
-                # (remover o check de cooldown anterior)
-                
                 try:
                     self.logger.debug(f"Fetching data for {symbol}...")
                     
@@ -829,6 +918,27 @@ class TradeManager:
                     self.logger.warning(
                         f"❌ Empty DataFrame for {symbol}: "
                         f"primary={len(primary_df)}, entry={len(entry_df)}"
+                    )
+                    continue
+                
+                # ✅ VALIDAÇÃO: Warmup mínimo
+                MIN_WARMUP_CANDLES = 200
+                if len(entry_df) < MIN_WARMUP_CANDLES:
+                    self.logger.debug(
+                        f"⚠️ {symbol}: Insufficient warmup "
+                        f"({len(entry_df)}/{MIN_WARMUP_CANDLES})"
+                    )
+                    continue
+                
+                # ✅ DATA FRESHNESS: Validação robusta
+                latest_entry_time = entry_df.index[-1]
+                age_seconds = (datetime.utcnow() - latest_entry_time.replace(tzinfo=None)).total_seconds()
+                max_age = self._get_max_data_age()
+                
+                if age_seconds > max_age:
+                    self.logger.warning(
+                        f"⚠️ Stale data for {symbol}: latest candle is {age_seconds:.0f}s old "
+                        f"(max: {max_age}s). Skipping this symbol."
                     )
                     continue
                 
@@ -887,48 +997,27 @@ class TradeManager:
         strength: float,
         df: pd.DataFrame
     ) -> None:
-        """
-        ✅ ORDER EXECUTION LATENCY: Execute a new trade com validação de latência
-        """
+        """Executar novo trade COM ordem real no Binance"""
+        
         try:
-            # ✅ LATENCY COMPENSATION: Validar que preço é "próximo" do sinal
-            signal_price = Decimal(str(df['close'].iloc[-1]))  # Preço do candle que gerou sinal
-            current_price = self.exchange.get_ticker_price(symbol)
-            
-            # Verificar latência de execução
-            price_diff_pct = abs(current_price - signal_price) / signal_price
-            
-            if price_diff_pct > Decimal('0.005'):  # Mais de 0.5% diferença
-                self.logger.warning(
-                    f"⚠️ {symbol}: Price moved {float(price_diff_pct)*100:.2f}% "
-                    f"since signal (Signal: ${signal_price}, Current: ${current_price})"
-                )
-                # Ainda executa, mas com log para análise
-            
-            # Get filters
+            # Calcular stops e quantidade
             filters = self.exchange.get_symbol_filters(symbol)
-            
-            # Get total capital
-            total_capital = self.exchange.get_total_balance_usdt()
-            
-            # Calculate stops - IGUAL AO BACKTEST
-            atr = self.mtf_analyzer.get_atr(df)
-            
-            side = signal  # 'BUY' or 'SELL'
+            current_price = self.exchange.get_ticker_price(symbol)
             
             stop_loss = self.risk_manager.calculate_stop_loss(
                 entry_price=current_price,
-                side=side,
-                atr=atr,
-                use_atr=bool(atr > 0)
+                side=signal,
+                atr=self.mtf_analyzer.get_atr(df),
+                use_atr=True
             )
             
             take_profit = self.risk_manager.calculate_take_profit(
                 entry_price=current_price,
-                side=side
+                side=signal
             )
             
-            # Calculate position size - IGUAL AO BACKTEST COM SIGNAL STRENGTH
+            total_capital = self.exchange.get_total_balance_usdt()
+            
             quantity = self.risk_manager.calculate_dynamic_position_size(
                 capital=total_capital,
                 entry_price=current_price,
@@ -941,12 +1030,63 @@ class TradeManager:
                 self.logger.warning(f"Position size too small for {symbol}")
                 return
             
-            # Create testnet trade object
+            # ✅ EXECUTAR ORDEM REAL NO TESTNET/LIVE
+            self.logger.info(
+                f"📤 Executing {signal} order: {quantity} {symbol} @ market"
+            )
+            
+            try:
+                order_response = self.exchange.create_order(
+                    symbol=symbol,
+                    side=signal,
+                    order_type='MARKET',
+                    quantity=quantity,
+                    test=False  # ✅ REAL
+                )
+                
+                exchange_order_id = order_response.get('orderId')
+                executed_qty = Decimal(str(order_response.get('executedQty', 0)))
+                avg_price = Decimal(str(order_response.get('avgPrice', current_price)))
+                
+                if not exchange_order_id:
+                    self.logger.error(f"No order ID returned for {symbol}")
+                    return
+                
+                self.logger.info(
+                    f"✅ Order executed: ID={exchange_order_id} | "
+                    f"Qty={executed_qty} | Avg=${avg_price}"
+                )
+                
+                if executed_qty < quantity:
+                    self.logger.warning(
+                        f"⚠️ Partial execution: Expected {quantity}, got {executed_qty}"
+                    )
+                
+                actual_entry_price = avg_price
+                
+            except BinanceAPIException as e:
+                self.logger.error(
+                    f"❌ Order execution failed: {e.status_code} - {e.message}"
+                )
+                notify(
+                    self.settings,
+                    f"❌ Order Failed - {symbol}",
+                    f"Status: {e.status_code}\nMessage: {e.message}\n"
+                    f"Quantity: {quantity}\nPrice: ${current_price}",
+                    "ERROR"
+                )
+                return
+            
+            except TimeoutError as e:
+                self.logger.error(f"⏱️ Order timeout: {e}")
+                return
+            
+            # ✅ CRIAR TRADE LOCAL SÓ APÓS CONFIRMAÇÃO
             trade = TestnetTrade(
                 symbol=symbol,
-                side=side,
-                entry_price=current_price,
-                quantity=quantity,
+                side=signal,
+                entry_price=actual_entry_price,
+                quantity=executed_qty,
                 entry_time=datetime.utcnow(),
                 stop_loss=stop_loss,
                 take_profit=take_profit
@@ -954,15 +1094,17 @@ class TradeManager:
             
             self.open_trades[symbol] = trade
             
-            # Save to database
+            # ✅ SALVAR NO DATABASE COM ORDER ID
             db_trade = Trade(
                 symbol=symbol,
-                side=side,
-                entry_price=current_price,
-                quantity=quantity,
+                side=signal,
+                entry_price=actual_entry_price,
+                quantity=executed_qty,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 status='OPEN',
+                entry_time=datetime.utcnow(),
+                exchange_order_id=str(exchange_order_id),
                 strategy=self.settings.STRATEGY_MODE,
                 timeframe=self.settings.ENTRY_TIMEFRAME,
                 signal_strength=strength,
@@ -971,13 +1113,13 @@ class TradeManager:
             session.add(db_trade)
             session.commit()
             
-            # Send notification
             notify(
                 self.settings,
                 f"🎯 New Trade Opened - {symbol}",
-                f"Side: {side}\n"
-                f"Entry: ${current_price}\n"
-                f"Quantity: {quantity}\n"
+                f"Order ID: {exchange_order_id}\n"
+                f"Side: {signal}\n"
+                f"Entry: ${actual_entry_price}\n"
+                f"Quantity: {executed_qty}\n"
                 f"Stop Loss: ${stop_loss}\n"
                 f"Take Profit: ${take_profit}\n"
                 f"Signal Strength: {strength:.2f}",
@@ -985,12 +1127,11 @@ class TradeManager:
             )
             
             self.logger.info(
-                f"✅ Trade opened: {symbol} {side} @ ${current_price} | "
-                f"SL: ${stop_loss}, TP: ${take_profit}"
+                f"✅ Trade recorded: {symbol} {signal} @ ${actual_entry_price} × {executed_qty}"
             )
             
         except Exception as e:
-            self.logger.error(f"Failed to execute trade: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error in _execute_trade: {e}", exc_info=True)
             session.rollback()
     
     def stop(self) -> None:

@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Binance Trading Bot - Main Entry Point
-Interactive menu system for selecting operation mode
-"""
-
 import sys
 import os
 from pathlib import Path
@@ -136,7 +130,6 @@ def main() -> None:
     """Main entry point"""
     clear_screen()
     
-    # Initialize settings and logging
     try:
         settings = Settings()
         logger = setup_logging(settings)

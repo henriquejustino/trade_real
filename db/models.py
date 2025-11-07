@@ -59,6 +59,13 @@ class Trade(Base):
     
     # Notes and metadata
     notes = Column(Text, nullable=True)
+    exchange_order_id = Column(String(50), unique=True, nullable=True, index=True)
+    client_order_id = Column(String(50), unique=True, nullable=True, index=True)
+    actual_entry_price = Column(Numeric(20, 8), nullable=True)
+    actual_quantity = Column(Numeric(20, 8), nullable=True)
+    partial_exits = Column(Text, nullable=True)  # JSON
+    actual_fees = Column(Numeric(20, 8), nullable=True)
+    reconciled_at = Column(DateTime, nullable=True)
     trade_metadata = Column(Text, nullable=True)  # JSON string (renamed from 'metadata')
     
     # Mode
